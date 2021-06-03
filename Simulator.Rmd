@@ -1,9 +1,27 @@
 ---
-title: "Munich less dense"
+title: "Toyworld generation, Estimation and Evaluation"
+author: "Marco Ramljak"
+date: "`r Sys.Date()`"
 output:
-  html_document:
-    df_print: paged
+  bookdown::html_document2:
+    code_folding: show
+    code_download: true
+    theme: sandstone
+    toc: true
+    toc_float: true
+    number_sections: true
+    fig_caption: yes
+knit: (function(input_file, encoding) { out_dir <- 'docs'; rmarkdown::render(input_file,
+  encoding=encoding, output_file=file.path(dirname(input_file), out_dir, 'index.html'))})
 ---
+
+This notebook shows the first version of the MNO analysis pipeline. The notebook has three main parts: Toyworld Generation, Estimation, Evaluation. The pipieline is constructed in a modular way and each part represents one module. This means that one can start and finish the pipeline to ones own liking at any starting or end point of a module. 
+
+The toyworld is based on a semi-synthetic data generated process. For this, census data from Germany on a 100m\*100m regular grid has been used, which can be downloaded [here](https://www.zensus2011.de/DE/Home/Aktuelles/DemografischeGrunddaten.html?nn=3065474). Each element in this grid is expressed as a tile. For computation purposes only a small area of Germany was used for the toyworld, namely the area of Munich and its near surroundings. This focus area includes 160,000 tiles. For a mobile phone population the regular census population values are used. To mimic the mobile phone population of one mobile network operator (MNO) the population is reduced to about a third.
+
+Furthermore, custom functions have been built and are used throughout this notebook. In near time, these will be released within an R-package.
+
+# General Setup: Loading Packages and Custom Functions
 
 ```{r}
 # Data manipulation
@@ -20,9 +38,11 @@ library(stars)
 library(Matrix)
 
 # MNO data handling and propagation model setup
+# Credits to Prof. Martijn Tennekes https://github.com/mtennekes/mobloc
 library(mobloc)
 
 # Comparison of 2d histograms (Kantorovitch Wasserstein distance a.k.a. Earth Movers distance)
+# Credits to Prof. Stefano Gualandi https://cran.r-project.org/web/packages/SpatialKWD/SpatialKWD.pdf
 library(SpatialKWD)
 
 # Output organisation and plotting support
@@ -30,6 +50,7 @@ library(ggthemes)
 library(viridis)
 library(ggrepel)
 library(ggpointdensity)
+library(scattermore)
 library(grid)
 library(gridExtra)
 library(knitr)
@@ -44,64 +65,113 @@ source("pipeline functions.R")
 
 ```
 
-## Load Munich population
+# Toyworld Generation
 
-```{r}
-# munich
-munich.raw <- readRDS("C:/Users/Marco/Vysoká škola ekonomická v Praze/Tony Wei Tse Hung - YAY/working objects/munich.rds")
+This part is concerned with generating a toyworld that is based on the above specified focus area. After specifying the population aspect of the toyworld, the radio network will be specified. 
 
+## Toyworld Generation: Population
+
+This subchapter defines the generation of a population. As mentioned above the focus area is zoomed into the area of Munich and its near surroundings. It should be noted that an additional version of this subchapter is already created that gives options of creating a completely artificial focus area and population with multiple parameters to adjust. However, to present the complete functionality of the pipeline and its capability to also easily work with real data, the Munich area is chosen. The following chunk specifies the necessary objects to continue with the creation of a radio network in this focus area.
+
+```{r population-data}
+# data read in
+munich.raw <- readRDS("Data/munich.rds")
+
+# define raster object from focus area
 munich.raster <- rasterFromXYZ(munich.raw, crs = st_crs(3035)$proj4string)
+
+# define empty list object where all GTP objects will be stored
 munich <- NULL
 
+# define sf version of raster object
 munich$area.sf <- munich.raster %>%
   st_as_stars() %>%
   st_as_sf() %>%
-  dplyr::select(tile.id, pop, elevation) %>%
-  mutate(type = "NA")
+  mutate(centroid.geometry = st_centroid(.$geometry)) %>% 
+  mutate(X.centroid = unlist(map(.$centroid.geometry, 1)),
+         Y.centroid = unlist(map(.$centroid.geometry, 2))) %>% 
+  dplyr::select(tile.id, pop, elevation, X.centroid, Y.centroid) %>%
+  mutate(type = "NA") # only necessary if different tile types can be defined (urban, rural, etc...)
 
+# regular dataframe version
 munich$area.df <- munich$area.sf %>%
   st_drop_geometry()
 
+# unionized version of focus area
 munich$area.union <- munich$area.sf %>%
   st_union()
 
+# bounding box coordinates of focus area
 munich$area.bbox <- munich$area.union %>%
   st_bbox(crs = sf::st_crs(3035))
 
+# specify raster object and tile id number
 munich$area.raster <- munich.raster %>%
   raster(., layer = "tile.id")
 
+# specify raster object and elevation value of each tile (here considered as constant)
 munich$area.elevation <- munich.raster %>%
   raster(., layer = "elevation")
 
+# number of tiles
 munich$area.params[["tile.num"]] <- length(munich$area.df$tile.id)
+
+# size of tiles
 munich$area.params[["base.tile.size"]] <- as.numeric(sqrt(st_area(munich$area.sf[1,])))
 
-## renaming
+# stroing everything in area object
 area <- munich
+```
 
-
-# summary plots
-breaks <- c(0, 2, 10, 20, 50, 100, 200, 500, 1000, Inf)
+```{r gtp-map, fig.cap="Spatial population density of the ground truth population"}
+# adjustable break points for map categories
+breaks <- c(0, 2, 5, 10, 20, 50, 100, 200, 350, Inf)
+# plot map and print
 area$area.sf %>% 
   mutate(pop.cat = cut(pop, breaks = breaks, dig.lab = 7, right = F)) %>% 
   map_density(data = ., var = "pop.cat", label = "GTP")
 
-pop_summary_results(area$area.sf)
-
-density_plots(area$area.df)
-
-
 ```
 
 
+```{r pop-summary}
+# summary descriptives of GTP
+pop_summary_results(area$area.sf) %>% 
+  dplyr::select(n.tiles = n.type, mean.pop, sd.pop, min.pop, max.pop, sum.pop)
 
-## Create radio network
+```
 
-```{r, fig.height=8, fig.width=10}
+```{r density-plot, fig.cap="Distribution of the ground truth population"}
+# ECCDF and ECDF of GTP
+(density_plots(area$area.df))
+```
+
+## Toyworld Generation: Radio network
+
+This subchapter refers to the development of a radio network within our focus area. Developing the radio network is heavily dependent on the `mobloc` package, which is promoted through the European Statistical System. However, certain functions have been adjusted to the authors needs.
+
+In general, the `mobloc` package allows to define many parameters, and, if they are not defined, default parameters, set by the package, are used. This makes it very easy to implement as much or as little information one has on a certain network and always making it work. The following adjustable parameters and default values are provided through the package for creating a radio network and modeling the signal strength in a focus area:
+
+```{r}
+# possible mobloc parameters
+mobloc_param()
+```
+
+This toyworld contains a radio network with three layers (Macro, Meso and Micro). The development of each layer starts with a hexagonal grid in which the points define tower locations. The hexagons have different sizes (i.e. tower distance) dependent on the layer and contain some randomness within the layer (jitter) to prevent estimation artifacts. Each layer spans over the complete focus area.
+
+On each tower three directional antennas are placed that are directed in a 120° angle to each other. All layers contain a rotation parameter to prevent antennas of different layers broadcasting into the exact same direction, in reference to the focus area. No omnidirectional antennas are implemented in this toyworld, therefore, all `mobloc` parameters with the suffix "\_small" are not used.
+
+The antennas are specified with layer specific parameters (e.g. height, power, path loss exponent, etc.). All antennas are specified in a so called cellplan in which all parameters are nested/adjusted. When the cellplan is completed the antenna specific broadcasting profile (i.e. cell profile) is estimated and projected onto the focus area. The function `compute_sig_strength()` computes the distance, signal strength and signal dominance between any tile and any antenna. Furthermore, a minimum parameter is implemented that defines the minimum signal dominance value an antenna-tile relationship needs to have in order to be considered "covered". For the following estimators, it needs to be assured that every tile is sufficiently covered, meaning, that there is at least one antenna-tile relationship that has a signal dominance value higher than the minimum threshold. The signal dominance is a more interpretable measure for the signal strength and other aspects such as load balancing. This measure will be used later on to define the connection likelihood.
+
+```{r, network-parameters, message=FALSE, warning=FALSE, fig.height=8, fig.width=10, fig.cap="Theoretical radio network parameters for each layer"}
 # specify parameters of each cell
-MA.cell.param.mobloc <- mobloc_param(W = 5, range = 10000, ple = 3.4, height = 10,
-                                     midpoint = -85, steepness = 0.15, sig_d_th = 0.05)
+MA.cell.param.mobloc <- mobloc_param(W = 5, # Power in Watts
+                                     range = 10000, # maximum coverage range
+                                     ple = 3.4, # Path loss exponent
+                                     height = 10, # height of the antenna
+                                     midpoint = -85, # midpoint parameter of the logistic function for signal dominance
+                                     steepness = 0.15, # steepness parameter of the logistic function for signal dominance
+                                     sig_d_th = 0.05) # dominance minimum threshold 
 
 ME.cell.param.mobloc <- mobloc_param(W = 50, range = 3500, ple = 3.8, height = 10,
                                      midpoint = -85, steepness = 0.3, sig_d_th = 0.05)
@@ -121,26 +191,31 @@ param.df <- tibble(cell.kind = c("MA", "ME", "MI"),
                                     ME.cell.param.mobloc$sig_d_th,
                                     MI.cell.param.mobloc$sig_d_th))
 
+# reduced data frame of theoretical signal strength distribution
 param.df.reduced <- param.df %>% 
   dplyr::select(cell.kind, dominance.th)
 
-# visualize theoretical signal parameter plots
+# theoretical signal strength parameter plots
 sig.pram.plots <- sig_param_plots(param.df = param.df, range.max = 20000, base_size = 11)
-a <- ggpubr::as_ggplot(sig.pram.plots$final)
-ggsave("coverage_contur/coverage.diag.png", a, device = "png", width = 10)
-```
 
-```{r}
+# print
+(a <- ggpubr::as_ggplot(sig.pram.plots$final))
+# save
+ggsave("Plots/coverage.diag.png", a, device = "png", width = 10)
+
 set.seed(100)
 
 # create tower positions with attached cells
-MA.cells.unparam <- create_cells(area.sf = area$area.sf, 
-                                 tower.dist = 8500, rotation.deg = 0, 
-                                 jitter = 1000, small = FALSE, 
-                                 subscript = "MA", seed = 3)
+MA.cells.unparam <- create_cells(area.sf = area$area.sf, # focus area
+                                 tower.dist = 8500, # tower distance
+                                 rotation.deg = 0, # rotation parameter
+                                 jitter = 1000, # amount of jitter in meters
+                                 small = FALSE, # directional cell
+                                 subscript = "MA", # layer label
+                                 seed = 3)
 
 ME.cells.unparam <- create_cells(area.sf = area$area.sf,
-                                 tower.dist = 4200, rotation.deg = 35,
+                                 tower.dist = 3500, rotation.deg = 35,
                                  jitter = 700, small = FALSE,
                                  subscript = "ME", seed = 7)
 
@@ -234,24 +309,26 @@ signal.dom <- signal.strength.summary %>%
 # how many tiles are not sufficiently covered
 paste0("Number of tiles which do not reach the signal dominance threshold of: " , sum(signal.dom$missing))
 # paste0("Number of tiles which do not reach the signal dominance threshold of ", sig_d_th, ": " , sum(signal.dom$missing))
-  
 ```
 
+The following chunk is merely executed to develop a smoother visualization of the radio cell coverage profiles. For this, the signal strength is calculated on a finer grid 25m\*25m. This finer grid is only relevant for this chunk and the following contour visualizations. The contours are interpolated based on the tiles' signal dominance values and the tile centroids.
 
-# develop finer grid for contour plots
-This chunk is just computed for the contour plots to be smoother
-```{r}
+```{r contur-plot-setup, message=FALSE}
+# specifiy how much finer the grid should be
 finer.grid.factor <- 2
 finer.grid.tile.id <- c(1:640000) # adjust to grid factor
 
+# disaggregate the regular grid based on the finer.grid.factor
 area$area.raster.finer <- disaggregate(area$area.raster, finer.grid.factor) %>% 
   setValues(., finer.grid.tile.id)
 
+# disaggregate the elevation grid based on the finer.grid.factor
 area$area.elevation.finer <- disaggregate(area$area.elevation, finer.grid.factor)
 
+# transform raster back to sf
 area$area.finer.grid.sf <- st_as_sf(st_as_stars(area$area.raster.finer))
 
-# compute signal strength and device to cell association
+# compute signal strength and device to cell association for finer grid for each layer
 MA.signal.strength.finer <- compute_sig_strength(cp = MA.cellplan.val$cellplan.val, 
                                                  raster = area$area.raster.finer, 
                                                  param = MA.cellplan.val$cell.param.mobloc, 
@@ -271,15 +348,19 @@ signal.strength.comb.dt.finer.grid <- rbindlist(list(MA.signal.strength.finer,
                                                      ME.signal.strength.finer,
                                                      MI.signal.strength.finer))
 
-tictoc::tic()
+
+# calculate tile centroid for each tile on the finer grid
 area.reduced.contour <- area$area.finer.grid.sf %>% 
   dplyr::select(tile.id.num = tile.id) %>% 
-  mutate(lon = map_dbl(geometry, ~st_centroid(.x)[[1]]),
-         lat = map_dbl(geometry, ~st_centroid(.x)[[2]]))
-tictoc::toc()
+  st_centroid() %>% 
+  mutate(lon = unlist(map(.$geometry, 1)),
+         lat = unlist(map(.$geometry, 2)))
 
+# set the coordinate reference system
 crs.set <- st_crs(area.reduced.contour)
 
+# compute the antenna specfic broadcasting profile contour
+# define two categories: contour of signal dominance values below or equal to 0.5 and above 0.5 resulting later in two contour lines per antenna
 contour.data.raw <- signal.strength.comb.dt.finer.grid %>%
   as_tibble() %>%
   mutate(tile.id.num = as.numeric(rid)) %>%
@@ -292,59 +373,60 @@ contour.data.raw <- signal.strength.comb.dt.finer.grid %>%
   left_join(area.reduced.contour, by = c("tile.id.num")) %>% 
   st_as_sf(coords = c("lon", "lat"), crs = crs.set) 
 
+# split according to layer
 contour.data.raw.split <- contour.data.raw %>% 
   st_drop_geometry() %>% 
   split(.$cell.kind) %>% 
   map(~distinct(., cell, x.tow, y.tow))
 
-# contour.data.raw.ME <- contour.data.raw %>% 
-#   st_drop_geometry() %>% 
-#   filter(cell.kind == "ME") %>% 
-#   distinct(cell, x.tow, y.tow)
-# 
-# contour.data.raw.ME <- contour.data.raw %>% 
-#   st_drop_geometry() %>% 
-#   filter(cell.kind == "MI") %>% 
-#   distinct(cell, x.tow, y.tow)
-
+# summarise antenna specific contour as polygon and then compute the convex hull to result in simple contour line
 contour.data.summary <- contour.data.raw %>% 
   dplyr::select(cell, cell.kind, s.discrete, s) %>% 
   dplyr::group_by(cell, cell.kind, s.discrete) %>%
   dplyr::summarise() %>%
   st_convex_hull()
+```
 
-contour.complete.MA <- contour.data.summary %>% 
+```{r contour-MA, fig.cap="Coverage Contour of Macro cells, showing the area with less or equal than 0.5 signal dominance"}
+(contour.complete.MA <- contour.data.summary %>% 
   filter(cell.kind == "MA" & s.discrete == "1") %>% 
   ggplot() +
   geom_sf(data = area$area.union) +
   geom_sf(color = "red", fill = "transparent") +
   geom_point(data = contour.data.raw.split$MA, aes(x = x.tow, y = y.tow), color = "black", shape = 2) +
   theme_minimal() +
-  labs(x = "", y = "")
-ggsave("coverage_contur/complete.MA.finer.png", contour.complete.MA, device = "png")
+  labs(x = "", y = ""))
+ggsave("Plots/contour.complete.MA.finer.png", contour.complete.MA, device = "png")
+```
 
-contour.complete.ME <- contour.data.summary %>% 
+```{r contour-ME, fig.cap="Coverage Contour of Meso cells, showing the area with less or equal than 0.5 signal dominance"}
+(contour.complete.ME <- contour.data.summary %>% 
   filter(cell.kind == "ME" & s.discrete == "1") %>% 
   ggplot() +
   geom_sf(data = area$area.union) +
   geom_sf(color = "red", fill = "transparent") +
   geom_point(data = contour.data.raw.split$ME, aes(x = x.tow, y = y.tow), color = "blue", shape = 2) +
   theme_minimal() +
-  labs(x = "", y = "")
-ggsave("coverage_contur/complete.ME.finer.png", contour.complete.ME, device = "png")
+  labs(x = "", y = ""))
+ggsave("Plots/contour.complete.ME.finer.png", contour.complete.ME, device = "png")
 
-contour.complete.MI <- contour.data.summary %>% 
+```
+
+```{r contour-MI, fig.cap="Coverage Contour of Micro cells, showing the area with less or equal than 0.5 signal dominance"}
+(contour.complete.MI <- contour.data.summary %>% 
   filter(cell.kind == "MI" & s.discrete == "1") %>% 
   ggplot() +
   geom_sf(data = area$area.union) +
   geom_sf(color = "red", fill = "transparent") +
   geom_point(data = contour.data.raw.split$MI, aes(x = x.tow, y = y.tow), color = "green", shape = 2) +
   theme_minimal() +
-  labs(x = "", y = "")
-ggsave("coverage_contur/complete.MI.finer.png", contour.complete.MI, device = "png")
+  labs(x = "", y = ""))
+ggsave("Plots/contour.complete.MI.finer.png", contour.complete.MI, device = "png")
+```
 
+```{r contour-certain, fig.cap="Coverage Contour of a sample cell of each layer, showing the discretized signal dominance (cell profile)"}
 
-contour.certain <- contour.data.summary %>% 
+(contour.certain <- contour.data.summary %>% 
   filter(str_detect(cell, "MA.12.|ME.100.|MI.18.")) %>% 
   ggplot() +
   geom_sf(data = area$area.union) +
@@ -355,14 +437,14 @@ contour.certain <- contour.data.summary %>%
   scale_color_discrete("Signal dom.", breaks = c("1", "2"), labels = c("0.05 <= s < 0.5",
                                                                       "s >= 0.5")) +
   theme_minimal() +
-  labs(x = "", y = "")
-ggsave("coverage_contur/hull.certain.finer.png", contour.certain, device = "png")
+  labs(x = "", y = ""))
+ggsave("Plots/hull.certain.finer.png", contour.certain, device = "png")
+
 ```
 
-# These coverage diagnostics plot still need to be refined
+The following chunks visualizes different views on antenna coverage, specific for each layer.
 
-```{r}
-tictoc::tic()
+```{r coverage-kind-setup}
 # maximum of two rows per tile, tiles with only one row, mean they are only covered by one cell.kind
 signal.strength.summary.ck <- signal.strength.summary.helper %>% 
   group_by(tile.id, cell.kind) %>%
@@ -378,10 +460,11 @@ signal.strength.summary.ck <- signal.strength.summary.helper %>%
   pivot_longer(cols = -c(tile.id, cell.kind),
                names_to = "kind", 
                values_to = "values") # possibly different pivot to get "kind" into multiple variables
+```
 
-
+```{r histogram-cells, fig.cap="The number of cells a tile is covered by, in total and per cell layer"}
 # histogram cells
-tile.coverage.hist <- signal.strength.summary.ck %>%
+(tile.coverage.hist <- signal.strength.summary.ck %>%
   filter(str_detect(kind, pattern = "count")) %>% 
   mutate(cat = case_when(str_detect(kind, pattern = "complete") ~ "complete",
                          TRUE ~ paste0(cell.kind))) %>% 
@@ -393,10 +476,10 @@ tile.coverage.hist <- signal.strength.summary.ck %>%
   facet_grid(~cat) +
   labs(title = "Number of cells a tile is covered by",
        y = "Tile count",
-       x = "Number of cells")
+       x = "Number of cells"))
+```
 
-
-# build graph with rotating triangle
+```{r coverage-map-dfs}
 coverage.map.dom.df.MA <- signal.strength.summary.ck %>%
   filter(str_detect(kind, pattern = "max.s")) %>% 
   mutate(cat = case_when(str_detect(kind, pattern = "complete") ~ "complete",
@@ -421,6 +504,18 @@ coverage.map.dom.df.ME <- signal.strength.summary.ck %>%
                              TRUE ~ 0)) %>% 
   st_as_sf()
 
+coverage.map.dom.df.MI <- signal.strength.summary.ck %>%
+  filter(str_detect(kind, pattern = "max.s")) %>% 
+  mutate(cat = case_when(str_detect(kind, pattern = "complete") ~ "complete",
+                         TRUE ~ paste0(cell.kind))) %>% 
+  filter(cat == "MI") %>% 
+  dplyr::select(-cell.kind) %>% 
+  mutate(tile.id.num = as.numeric(tile.id)) %>% 
+  full_join(area$area.sf, by = c("tile.id.num" = "tile.id")) %>%  # change later on
+  mutate(missing = case_when(is.na(values) ~ 1,
+                             TRUE ~ 0)) %>% 
+  st_as_sf()
+
 coverage.map.dom.df.complete <- signal.strength.summary.ck %>%
   filter(str_detect(kind, pattern = "max.s")) %>% 
   mutate(cat = case_when(str_detect(kind, pattern = "complete") ~ "complete",
@@ -433,134 +528,159 @@ coverage.map.dom.df.complete <- signal.strength.summary.ck %>%
   mutate(missing = case_when(is.na(values) ~ 1,
                              TRUE ~ 0)) %>% 
   st_as_sf()
+```
 
-coverage.map.MA <- coverage.map.dom.df.MA %>% 
-  ggplot() +
-  geom_sf(aes(fill = values), color = "transparent") +
-  geom_point(data = as_tibble(MA.cellplan.val$cellplan.val), aes(x, y),
-             shape = 2, color = "#F8766D") +
-  scale_fill_gradient(low = "white", high = "black", na.value = "red", 
-                      limits = c(0, 1)) +
-  labs(title = "MA Coverage", 
-       fill = "Signal Dominance",
-       x = "",
-       y = "") +
-  theme(plot.margin = unit(c(0, 0, 0, 0), "cm"),
-        axis.title.x = element_blank(),
-        axis.text.x = element_blank(),
-        axis.ticks.x = element_blank(),
-        axis.title.y = element_blank(),
-        axis.text.y = element_blank(),
-        axis.ticks.y = element_blank(),
-        legend.position = "none")
+```{r coverage-map-MA, fig.cap="Actual coverage heatmap for Macro cells"}
 
-coverage.map.ME <- coverage.map.dom.df.ME %>% 
-  ggplot() +
-  geom_sf(aes(fill = values), color = "transparent") +
-  geom_point(data = as_tibble(ME.cellplan.val$cellplan.val), aes(x, y),
-             shape = 2, color = "#00BFC4") +
-  scale_fill_gradient(low = "white", high = "black", na.value = "red", 
-                      limits = c(0, 1)) +
-  labs(title = " ME Coverage", 
-       fill = "Signal Dominance",
-       x = "",
-       y = "") +
-  theme(plot.margin = unit(c(0, 0, 0, 0), "cm"),
-        legend.position = "none",
-        axis.title.x = element_blank(),
-        axis.text.x = element_blank(),
-        axis.ticks.x = element_blank(),
-        axis.title.y = element_blank(),
-        axis.text.y = element_blank(),
-        axis.ticks.y = element_blank())
+system.time({
+  coverage.map.MA <- coverage.map.dom.df.MA %>% 
+    ggplot() +
+    geom_sf(aes(fill = values), color = "transparent") +
+    geom_point(data = as_tibble(MA.cellplan.val$cellplan.val), aes(x, y),
+               shape = 2, color = "#F8766D") +
+    scale_fill_gradient(low = "white", high = "black", na.value = "red", 
+                        limits = c(0, 1)) +
+    labs(title = "MA Coverage", 
+         fill = "Signal Dominance",
+         x = "",
+         y = "") +
+    theme_minimal() +
+    theme(plot.margin = unit(c(0, 0, 0, 0), "cm"),
+          axis.title.x = element_blank(),
+          axis.text.x = element_blank(),
+          axis.ticks.x = element_blank(),
+          axis.title.y = element_blank(),
+          axis.text.y = element_blank(),
+          axis.ticks.y = element_blank(),
+          legend.position = "none")
+  print(coverage.map.MA)
+})
 
-coverage.map.complete <- coverage.map.dom.df.complete %>% 
-  ggplot() +
-  geom_sf(aes(fill = values), color = "transparent") +
-  geom_point(data = cellplan.combined, aes(x, y, color = cell.kind),
-             shape = 2) +
-  scale_fill_gradient(low = "white", high = "black", na.value = "red", 
-                      limits = c(0, 1)) +
-  labs(title = "Complete coverage", 
-       color = "Tower kind",
-       fill = "Signal Dominance",
-       x = "",
-       y = "") +
-  theme(axis.title.x = element_blank(),
-        axis.text.x = element_blank(),
-        axis.ticks.x = element_blank(),
-        axis.title.y = element_blank(),
-        axis.text.y = element_blank(),
-        axis.ticks.y = element_blank())
+```
 
-# coverage.map.dom.df.binary <- signal.strength.summary.ck %>%
-#   filter(str_detect(kind, pattern = "max.s"),
-#          !str_detect(kind, pattern = "complete")) %>%
-#   group_by(tile.id) %>%
-#   # mutate(values = round(values, 2)) %>% 
-#   filter(values == max(values)) %>%
-#   ungroup() %>%
-#   mutate(tile.id.num = as.numeric(tile.id)) %>%
-#   full_join(area$area.sf, by = c("tile.id.num" = "tile.id")) %>%  # change later on
-#   mutate(missing = case_when(is.na(values) ~ 1,
-#                              TRUE ~ 0)) %>%
-#   st_as_sf()
-# 
-# 
-# coverage.map.binary <- coverage.map.dom.df.binary %>%
-#   sample_n(2000) %>% 
-#   ggplot() +
-#   geom_sf(aes(fill = cell.kind), color = "transparent", alpha = 0.3, show = FALSE) +
-#   geom_point(data = cellplan.combined, aes(x, y, color = cell.kind),
-#              shape = 2) +
-#   labs(title = "Binary coverage",
-#        color = "Tower kind",
-#        x = "",
-#        y = "") +
-#   theme(axis.title.x = element_blank(),
-#         axis.text.x = element_blank(),
-#         axis.ticks.x = element_blank(),
-#         axis.title.y = element_blank(),
-#         axis.text.y = element_blank(),
-#         axis.ticks.y = element_blank())
-
-coverage.diag <- arrangeGrob(coverage.map.MA, coverage.map.ME, 
-                             coverage.map.complete, tile.coverage.hist, 
-                             layout_matrix = rbind(c(1, 2),
-                                                   c(3, 4)))
-# coverage.map.MA
-# coverage.map.ME
-# coverage.map.complete
-# tile.coverage.hist
-
+```{r coverage-map-ME, fig.cap="Actual coverage heatmap for Meso cells"}
+(coverage.map.ME <- coverage.map.dom.df.ME %>% 
+    ggplot() +
+    geom_sf(aes(fill = values), color = "transparent") +
+    geom_point(data = as_tibble(ME.cellplan.val$cellplan.val), aes(x, y),
+               shape = 2, color = "#00BFC4") +
+    scale_fill_gradient(low = "white", high = "black", na.value = "red", 
+                        limits = c(0, 1)) +
+    labs(title = " ME Coverage", 
+         fill = "Signal Dominance",
+         x = "",
+         y = "") +
+    theme_minimal() +
+    theme(plot.margin = unit(c(0, 0, 0, 0), "cm"),
+          legend.position = "none",
+          axis.title.x = element_blank(),
+          axis.text.x = element_blank(),
+          axis.ticks.x = element_blank(),
+          axis.title.y = element_blank(),
+          axis.text.y = element_blank(),
+          axis.ticks.y = element_blank()))
 
 
 ```
 
+```{r coverage-map-MI, fig.cap="Actual coverage heatmap for Micro cells"}
+(coverage.map.MI <- coverage.map.dom.df.MI %>% 
+    ggplot() +
+    geom_sf(aes(fill = values), color = "transparent") +
+    geom_point(data = as_tibble(MI.cellplan.val$cellplan.val), aes(x, y),
+               shape = 2, color = "#00BFC4") +
+    scale_fill_gradient(low = "white", high = "black", na.value = "red", 
+                        limits = c(0, 1)) +
+    labs(title = " MI Coverage", 
+         fill = "Signal Dominance",
+         x = "",
+         y = "") +
+    theme_minimal() +
+    theme(plot.margin = unit(c(0, 0, 0, 0), "cm"),
+          legend.position = "none",
+          axis.title.x = element_blank(),
+          axis.text.x = element_blank(),
+          axis.ticks.x = element_blank(),
+          axis.title.y = element_blank(),
+          axis.text.y = element_blank(),
+          axis.ticks.y = element_blank()))
+```
 
-## Device to cell association
+```{r coverage-map-complete, fig.cap="Actual coverage heatmap for all cells"}
 
-```{r}
+(coverage.map.complete <- coverage.map.dom.df.complete %>% 
+    ggplot() +
+    geom_sf(aes(fill = values), color = "transparent") +
+    geom_point(data = cellplan.combined, aes(x, y, color = cell.kind),
+               shape = 2) +
+    scale_fill_gradient(low = "white", high = "black", na.value = "red", 
+                        limits = c(0, 1)) +
+    labs(title = "Complete coverage", 
+         color = "Tower kind",
+         fill = "Signal Dominance",
+         x = "",
+         y = "") +
+    theme_minimal() +
+    theme(axis.title.x = element_blank(),
+          axis.text.x = element_blank(),
+          axis.ticks.x = element_blank(),
+          axis.title.y = element_blank(),
+          axis.text.y = element_blank(),
+          axis.ticks.y = element_blank()))
+```
+
+```{r coverage-multinomial-setup}
+coverage.map.dom.df.binary <- signal.strength.summary.ck %>%
+  filter(str_detect(kind, pattern = "max.s"),
+         !str_detect(kind, pattern = "complete")) %>%
+  group_by(tile.id) %>%
+  # mutate(values = round(values, 2)) %>%
+  filter(values == max(values)) %>%
+  ungroup() %>%
+  mutate(tile.id.num = as.numeric(tile.id)) %>%
+  full_join(area$area.sf, by = c("tile.id.num" = "tile.id")) %>%  # change later on
+  mutate(missing = case_when(is.na(values) ~ 1,
+                             TRUE ~ 0)) %>%
+  st_as_sf()
+```
+
+```{r coverage-multinomial-map, fig.cap=""}
+(coverage.map.binary <- coverage.map.dom.df.binary %>%
+    ggplot() +
+    geom_sf(aes(fill = cell.kind), color = "transparent", alpha = 0.3, show = FALSE) +
+    geom_point(data = cellplan.combined, aes(x, y, color = cell.kind),
+               shape = 2) +
+    labs(title = "Maximum coverage categorized by cell layer",
+         color = "Cell kind",
+         x = "",
+         y = "") +
+    theme_minimal() +
+    theme(axis.title.x = element_blank(),
+          axis.text.x = element_blank(),
+          axis.ticks.x = element_blank(),
+          axis.title.y = element_blank(),
+          axis.text.y = element_blank(),
+          axis.ticks.y = element_blank()))
+```
+
+## Toyworld Generation: Device to cell association
+
+This subchapter refers to the final task in the toyworld generation: the device to cell association. Here we bring the population with the network together and stochastically assign the mobile phone population in each tile to the respective antennas. The result is the so-called c-vector, which describes the number of mobile phones assigned to each cell. The c-vector represents the "observation" an MNO provider collects at a specific point of time. The basis parameter for this assignment is the signal dominance which is normalized in the form of a conditional probability. These conditional probabilities describe the elements of the P.matrix, which is the main model to estimate (geolocation module).
+
+```{r dev-to-cell}
 # specify the option of differing parameters for sig_d_th and max_overlapping_cells depending on the cell type in custom create_strength_llh function
 
-# Workaround: securing that sig_d_th and max_overlapping_cells are the same
+# Workaround: securing that sig_d_th and max_overlapping_cells are the same for each layer
 signal.strength.llh.param <- list(sig_d_th = max(cellplan.combined.reduced$dominance.th),
                                   max_overlapping_cells = 100)
 
-
-# creating the long format of the P matrix
-# MA.signal.strength.llh <- create_strength_llh(strength = MA.signal.strength, 
-#                                               param = signal.strength.llh.param)
-# 
-# ME.signal.strength.llh <- create_strength_llh(strength = ME.signal.strength, 
-#                                               param = signal.strength.llh.param)
-
+# defining the connection probability
 signal.strength.llh.combined <- create_strength_llh(strength = signal.strength.comb.dt, 
                                                     param = signal.strength.llh.param) %>% 
   as_tibble() %>% 
   mutate(tile.id = rid) %>% 
   group_by(tile.id) %>%
-  mutate(pij = smart.round(pag, 3)) %>%
+  mutate(pij = smart_round(pag, 3)) %>% # round values to the third decimal and assuring that all columns (tiles) add up to 1 (column stocahsticity)
   ungroup() %>%
   left_join(area$area.df, by = "tile.id") %>% 
   mutate(coverage.kind = case_when(pop == 0 ~ "0 population",
@@ -586,41 +706,74 @@ C.vec.fixed.helper <- signal.strength.llh.combined %>%
   dplyr::select(tile.id, cell, pop)
 
 # One object where tiles are covered by multiple cells
-C.vec.multiple.helper <- signal.strength.llh.combined %>% 
+C.vec.multiple.helper.new <- signal.strength.llh.combined %>% 
   filter(coverage.kind == "covered by multiple antennas") %>% 
-  group_split(tile.id) 
+  split(.$tile.id) 
 
-tictoc::tic()
-# Calculate the number of cores
-no_cores <- availableCores() - 1
-plan(multisession, workers = no_cores)
+# Sampling mobile phones within tiles to cells depending on connection probability
+C.vec.multiple <- C.vec.multiple.helper.new %>% 
+  map(c.vec.sampler) %>% 
+  map(setattr, name = "class", value = "data.table") %>% 
+  rbindlist(.) %>% 
+  .[, .N, by = V1] %>% 
+  as_tibble() %>% 
+  dplyr::select(cell = V1, pop = N)
 
-C.vec.multiple <- C.vec.multiple.helper %>% 
-  future_map(~sample(x = .$cell, mean(.$pop),
-                     replace = T, prob = .$pij), 
-             .options = furrr_options(seed = T), .progress = T) %>% 
-  future_map(as_tibble, .id = "tile.id", .progress = T) %>% 
-  future_map(~group_by(., value), .progress = T) %>% 
-  future_map(~summarise(., pop.count.rand = n(), .groups = "drop"), 
-             .progress = T)
-tictoc::toc()
-
+# pulling all c-vec helper objects together and develop final c-vec dataframe
 C.vec.df <- C.vec.multiple %>% 
-  bind_rows() %>% 
-  dplyr::select(cell = value, pop = pop.count.rand) %>% 
-  bind_rows(C.vec.fixed.helper) %>% 
+  bind_rows(C.vec.fixed.helper) %>%
   group_by(cell) %>% 
   summarise(phones.sum = sum(pop))
-
-(c.vec.hist <- C.vec.df %>% 
-  ggplot() +
-  geom_histogram(aes(phones.sum)) +
-  labs(title = "Number of phones a cell has registered",
-       y = "Cell count",
-       x = "Number of phones"))
 ```
 
-True P matrix for toy world generation
+```{r c-vec-distribution, fig.cap="Distribution of the toyworld population"}
+# log scale breaks for background grid
+minor.breaks <- rep(1:9, 21) * (10^rep(-10:10, each = 9))
+
+# develop c-vec dataset for plotting eccdf and ecdf
+c.vec.density.data <- C.vec.df %>% 
+    mutate(c.plot = phones.sum + 1) %>%  
+    arrange(c.plot) %>%  
+    mutate(prob = 1 / n()) %>%  
+    mutate(cum.prob = cumsum(prob)) %>%  
+    mutate(cum.prob.comp = 1 - cum.prob) %>%  
+    dplyr::select(cum.prob.comp, c.plot) 
+
+# ECCDF plot c-vec
+c.vec.eccdf <- c.vec.density.data %>% 
+    ggplot() +
+    geom_point(aes(x = c.plot, y = cum.prob.comp)) +
+    scale_y_log10(labels = scales::trans_format("log10", 
+                                                scales::math_format(10^.x)),
+                  minor_breaks = minor.breaks) +
+    scale_x_log10(labels = scales::trans_format("log10", 
+                                                scales::math_format(10^.x)),
+                  minor_breaks = minor.breaks) +
+    annotation_logticks(sides = "lb") +
+    labs(title = "Number of phones a cell has registered (ECCDF and ECDF)",
+         y = "log(ECCDF)",
+         x = "Number of phones")
+
+# ECDF plot c-vec
+c.vec.ecdf <- c.vec.density.data %>%   
+  ggplot() + 
+  geom_point(aes(x = c.plot, y = cum.prob.comp)) + 
+  labs(title = "", y = "", x = "") +
+  theme(legend.position = "none",
+        plot.margin = unit(c(-0.5, 0, 0, -0.5), "cm")) 
+
+
+(combined.c.vec <- c.vec.eccdf +
+  annotation_custom(ggplotGrob(c.vec.ecdf), 
+                    xmin = 0.2, xmax = 3, 
+                    ymin = -2.8, ymax = -1))
+ggsave("Plots/histogram.c.vec.png", combined.c.vec, device = "png")
+```
+
+In the following code chunk we are specifying the P matrix, with tiles as columns, antennas as rows and antenna-tile relationships as the elements. This matrix can be described as the connection probability. Each column adds up to 1, meaning it is column stochastic. This particular version of the connection probability can be described as exact, as it represents the same information which is used for the data generating mechanism in the development of the toyworld. We will define a copy of the P matrix, which will be called P\* (P.star) and describes the modeling parameter necessary for all estimators, excluding the Voronoi estimators. For the sensitivity analysis different versions of this P.matrix will be defined and used for the estimators. Each version will represent a different level of certainty on the network coverage. Through this sensitivity analysis, we will be able to scrutinize the effect of different levels of (valid) information available. A practical question is: If one were to know only little about the network coverage profile of a specific area, how accurate will the final estimations on the tile level still be? 
+
+Furthermore, in the following code chunk we implement the process of consolidation a.k.a. the development of super tiles. These are tiles in the P matrix that are indistinguishable from each other based on their relationships to antennas (i.e. columns in the P matrix that are exactly the same). These tiles will yield in all estimators the exact same value, therefore, to reduce computational resources, they can be consolidated to supertiles and afterwards disaggregated again.
+
 
 ```{r}
 P.long.complete.df <- full_join(signal.strength.llh.combined, C.vec.df, by = "cell") %>% 
@@ -1329,7 +1482,7 @@ needs adjustment and takes long to run
 # ggsave(filename = "kwd final/kwd.complete.1x1.plot.png", plot = kwd.complete.plot, device = "png")
 ```
 
-#### kwd convergence (EM and )
+#### kwd convergence (EM and DF)
 
 ```{r}
 
