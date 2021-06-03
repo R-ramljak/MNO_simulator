@@ -119,7 +119,7 @@ munich$area.params[["tile.num"]] <- length(munich$area.df$tile.id)
 # size of tiles
 munich$area.params[["base.tile.size"]] <- as.numeric(sqrt(st_area(munich$area.sf[1,])))
 
-# stroing everything in area object
+# storing everything in area object
 area <- munich
 ```
 
@@ -531,30 +531,26 @@ coverage.map.dom.df.complete <- signal.strength.summary.ck %>%
 ```
 
 ```{r coverage-map-MA, fig.cap="Actual coverage heatmap for Macro cells"}
-
-system.time({
-  coverage.map.MA <- coverage.map.dom.df.MA %>% 
-    ggplot() +
-    geom_sf(aes(fill = values), color = "transparent") +
-    geom_point(data = as_tibble(MA.cellplan.val$cellplan.val), aes(x, y),
-               shape = 2, color = "#F8766D") +
-    scale_fill_gradient(low = "white", high = "black", na.value = "red", 
-                        limits = c(0, 1)) +
-    labs(title = "MA Coverage", 
-         fill = "Signal Dominance",
-         x = "",
-         y = "") +
-    theme_minimal() +
-    theme(plot.margin = unit(c(0, 0, 0, 0), "cm"),
-          axis.title.x = element_blank(),
-          axis.text.x = element_blank(),
-          axis.ticks.x = element_blank(),
-          axis.title.y = element_blank(),
-          axis.text.y = element_blank(),
-          axis.ticks.y = element_blank(),
-          legend.position = "none")
-  print(coverage.map.MA)
-})
+coverage.map.MA <- coverage.map.dom.df.MA %>% 
+  ggplot() +
+  geom_sf(aes(fill = values), color = "transparent") +
+  geom_point(data = as_tibble(MA.cellplan.val$cellplan.val), aes(x, y),
+             shape = 2, color = "#F8766D") +
+  scale_fill_gradient(low = "white", high = "black", na.value = "red", 
+                      limits = c(0, 1)) +
+  labs(title = "MA Coverage", 
+       fill = "Signal Dominance",
+       x = "",
+       y = "") +
+  theme_minimal() +
+  theme(plot.margin = unit(c(0, 0, 0, 0), "cm"),
+        axis.title.x = element_blank(),
+        axis.text.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.title.y = element_blank(),
+        axis.text.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        legend.position = "none")
 
 ```
 
@@ -770,42 +766,46 @@ c.vec.ecdf <- c.vec.density.data %>%
 ggsave("Plots/histogram.c.vec.png", combined.c.vec, device = "png")
 ```
 
-In the following code chunk we are specifying the P matrix, with tiles as columns, antennas as rows and antenna-tile relationships as the elements. This matrix can be described as the connection probability. Each column adds up to 1, meaning it is column stochastic. This particular version of the connection probability can be described as exact, as it represents the same information which is used for the data generating mechanism in the development of the toyworld. We will define a copy of the P matrix, which will be called P\* (P.star) and describes the modeling parameter necessary for all estimators, excluding the Voronoi estimators. For the sensitivity analysis different versions of this P.matrix will be defined and used for the estimators. Each version will represent a different level of certainty on the network coverage. Through this sensitivity analysis, we will be able to scrutinize the effect of different levels of (valid) information available. A practical question is: If one were to know only little about the network coverage profile of a specific area, how accurate will the final estimations on the tile level still be? 
+In the following code chunk we are specifying the P matrix, with tiles as columns, antennas as rows and antenna-tile relationships as the elements. This matrix can be described as the connection probability. Each column adds up to 1, meaning it is column stochastic. This particular version of the connection probability can be described as exact, as it represents the same information which is used for the data generating mechanism in the development of the toyworld. We will define a copy of the P matrix, which will be called P\* (P.star) and describes the modeling parameter necessary for all estimators, excluding the Voronoi estimators. For the sensitivity analysis different versions of this P.matrix will be defined and used for the estimators. Each version will represent a different level of certainty on the network coverage. Through this sensitivity analysis, we will be able to scrutinize the effect of different levels of (valid) information available. A practical question is: If one were to know only little about the network coverage profile of a specific area, how accurate will the final estimations on the tile level still be? Currently I am working on two algorithms that try to define different levels of information. One is already finished, however, not implemented yet into this notebook. Therefore, the only P matrix used for estimation purposes is currently the true model, as used in the data generating process, representing full level of information.
 
 Furthermore, in the following code chunk we implement the process of consolidation a.k.a. the development of super tiles. These are tiles in the P matrix that are indistinguishable from each other based on their relationships to antennas (i.e. columns in the P matrix that are exactly the same). These tiles will yield in all estimators the exact same value, therefore, to reduce computational resources, they can be consolidated to supertiles and afterwards disaggregated again.
 
 
 ```{r}
+# develop long format of P matrix which also contains certain cellplan parameters and "zero elements"
+# develop different versions of id variables (tile and antennas) for easier joining
 P.long.complete.df <- full_join(signal.strength.llh.combined, C.vec.df, by = "cell") %>% 
   # dplyr::select(tile.id, pop, elevation, cell, type, dist, pij, phones.sum) %>% 
   dplyr::select(tile.id, pop, cell, type, dist, pij, phones.sum) %>% 
   mutate(tile.id.chr = tile.id) %>% 
   mutate(tile.id = factor(tile.id)) %>% 
   mutate(tile.id.num = as.numeric(tile.id)) %>% 
-  mutate(cell.num = as.numeric(cell)) %>% 
+  mutate(cell.fac = factor(cell)) %>% 
+  mutate(cell.num = as.numeric(cell.fac)) %>% 
   mutate(cell.chr = as.character(cell))
 
+# Long format of P matrix with minimal variables and and unique rows
 P.long.df <- P.long.complete.df %>% 
   dplyr::select(tile.id, tile.id.num, tile.id.chr, cell, cell.num, cell.chr, pij) %>% 
   distinct()
 
-
+# Sparse matrix version of P matrix
 P.mat <- sparseMatrix(i = P.long.df$cell.num, 
                       j = P.long.df$tile.id.num, 
                       x = P.long.df$pij)
 
 
-########### Super tiles with oracle
+# Workflow for consolidating regular tiles to supertiles based on P matrix
 P.star.supertile.helper <- P.long.df %>% 
   dplyr::select(tile.id.chr, cell.chr, pij) %>% 
-  filter(!pij == 0) %>%
+  filter(!pij == 0) %>% # assure that no "non-zero" elements are present
   group_by(tile.id.chr) %>% 
   arrange(cell.chr) %>% 
   mutate(cell.comp = paste0(cell.chr, collapse = ""),
-         pij.comp = paste0(pij, collapse = "")) %>% 
+         pij.comp = paste0(pij, collapse = "")) %>% # develop variables that contain character version of all cell names and all connection probabilities (order matters!!!)
   ungroup() %>% 
-  group_by(cell.comp, pij.comp) %>% 
-  mutate(supertile.id = cur_group_id()) %>% 
+  group_by(cell.comp, pij.comp) %>% # group by these two variables to find tile that are identical in terms of the P matrix
+  mutate(supertile.id = cur_group_id()) %>% # define the new supertile id
   ungroup() %>% 
   mutate(supertile.id = factor(supertile.id)) %>% 
   mutate(supertile.id.num = as.numeric(supertile.id)) %>% 
@@ -813,166 +813,51 @@ P.star.supertile.helper <- P.long.df %>%
   right_join(P.long.df, by = c("tile.id.chr", "cell.chr")) %>% 
   dplyr::select(tile.id, tile.id.num, tile.id.chr, supertile.id, supertile.id.num, supertile.id.chr, 
                 cell, cell.num, cell.chr, pij = pij.x) %>% 
-  filter(!is.na(pij)) # check this
+  filter(!is.na(pij)) 
 
+# develop joiner object for knowing which regular tiles are within a supertile
 P.star.supertile.joiner <- P.star.supertile.helper %>%  
   distinct(tile.id.num, supertile.id, supertile.id.num, supertile.id.chr) %>% 
   arrange(tile.id.num) 
 
-  
-P.star.supertile.helper %>%  
-  distinct(tile.id, tile.id.num, tile.id.chr, supertile.id, supertile.id.num, supertile.id.chr, .keep_all = T) %>% 
-  group_by(supertile.id.num) %>% 
-  summarise(n = n()) %>% 
-  ungroup() %>% 
-  group_by(n) %>% 
-  summarise(count = n()) %>% 
-  datatable(caption = "Distribution of supertiles", rownames = F)
-
-
+# define P matrix on the supertile level
 P.star.supertile.long.df <- P.star.supertile.helper %>%
   distinct(supertile.id, supertile.id.num, supertile.id.chr, cell, cell.num, cell.chr, pij) %>% 
   arrange(cell.num)
 
 
-########### Super tiles with equal
-P.star.long.df <- P_equalizer(P.long.df, signal.strength.comb.dt)
-
-P.star.equal.supertile.helper <- P.star.long.df %>% 
-  dplyr::select(tile.id.chr, cell.chr, pij.equal) %>% 
-  filter(!pij.equal == 0) %>%
-  group_by(tile.id.chr) %>% 
-  arrange(cell.chr) %>% 
-  mutate(cell.comp = paste0(cell.chr, collapse = ""),
-         pij.equal.comp = paste0(pij.equal, collapse = "")) %>% 
-  ungroup() %>% 
-  group_by(cell.comp, pij.equal.comp) %>% 
-  mutate(supertile.equal.id = cur_group_id()) %>% 
-  ungroup() %>% 
-  mutate(supertile.equal.id = factor(supertile.equal.id)) %>% 
-  mutate(supertile.equal.id.num = as.numeric(supertile.equal.id)) %>% 
-  mutate(supertile.equal.id.chr = as.character(supertile.equal.id)) %>% 
-  right_join(P.star.long.df, by = c("tile.id.chr", "cell.chr")) %>% 
-  dplyr::select(tile.id, tile.id.num, tile.id.chr, supertile.equal.id, supertile.equal.id.num, supertile.equal.id.chr, 
-                cell, cell.num, cell.chr, pij.equal = pij.equal.x) %>% 
-  filter(!is.na(pij.equal)) # check this
-
-P.star.equal.supertile.joiner <- P.star.equal.supertile.helper %>%  
-  distinct(tile.id.num, supertile.equal.id, supertile.equal.id.num, supertile.equal.id.chr) %>% 
-  arrange(tile.id.num) 
-
-
-P.star.equal.supertile.helper %>%  
-  distinct(tile.id, tile.id.num, tile.id.chr, supertile.equal.id, supertile.equal.id.num, supertile.equal.id.chr, .keep_all = T) %>% 
-  group_by(supertile.equal.id.num) %>% 
-  summarise(n = n()) %>% 
-  ungroup() %>% 
-  group_by(n) %>% 
-  summarise(count = n()) %>% 
-  datatable(caption = "Distribution of supertiles equal", rownames = F)
-
-
-P.star.equal.supertile.long.df <- P.star.equal.supertile.helper %>%
-  distinct(supertile.equal.id, supertile.equal.id.num, supertile.equal.id.chr, cell, cell.num, cell.chr, pij.equal) %>% 
-  arrange(cell.num)
-
-
-# append supertile id (oracle and equal) to sim area base objects
+# append supertile id to sim area base objects
 area$area.sf.complete <- area$area.sf %>% 
-  left_join(P.star.supertile.joiner, by = c("tile.id" = "tile.id.num")) %>% 
-  left_join(P.star.equal.supertile.joiner, by = c("tile.id" = "tile.id.num")) 
+  left_join(P.star.supertile.joiner, by = c("tile.id" = "tile.id.num"))
 area$area.df.complete <- area$area.df %>% 
-  left_join(P.star.supertile.joiner, by = c("tile.id" = "tile.id.num")) %>% 
-  left_join(P.star.equal.supertile.joiner, by = c("tile.id" = "tile.id.num")) 
+  left_join(P.star.supertile.joiner, by = c("tile.id" = "tile.id.num"))
 
 ```
 
-# Modelling P via P* (one with oracle and one with equal probability)
+# Estimation
+
+In the Estimation part we configure all necessary parameters for the defined estimators. At the end, all final estimates are bounded together in one dataset on the tile level. Currently 5 estimators are implemented (which represent to the best of my knowledge all currently relevant ones).
+
+## Estimation: Setup
+
+Here we specify the connection probability models. In this case P = P\*. Furthermore, we define the c-vector, which contains the number of mobile phones an antenna has connected to, as well as the prior vector, which is defined as a constant for each tile (here 1). For the following estimator functions the parameters are assumed to be in a `datatable` format or sparse Matrix via `sparseMatrix`.
 
 ```{r}
-
-#### P* oracle
-P.star.oracle.dt.d <- P.long.df %>% 
+# Modelling true P with P* (P.star)
+P.star.dt <- P.long.df %>% 
   dplyr::select(i = cell.num, j = tile.id.num, pij) %>% 
   as.data.table()
 
-P.star.oracle.supertile.spm <- sparseMatrix(i = P.star.supertile.long.df$cell.num, 
-                                            j = P.star.supertile.long.df$supertile.id.num, 
-                                            x = P.star.supertile.long.df$pij)
+# P* on the supertile level as sparse matrix version
+P.star.supertile.spm <- sparseMatrix(i = P.star.supertile.long.df$cell.num, 
+                                     j = P.star.supertile.long.df$supertile.id.num,
+                                     x = P.star.supertile.long.df$pij)
 
-P.star.oracle.supertile.dt <- data.table(i = P.star.supertile.long.df$cell.num,
-                                         j = P.star.supertile.long.df$supertile.id.num,
-                                         pij = P.star.supertile.long.df$pij)
+# P* on the supertile level as datatable version
+P.star.supertile.dt <- data.table(i = P.star.supertile.long.df$cell.num,
+                                  j = P.star.supertile.long.df$supertile.id.num,
+                                  pij = P.star.supertile.long.df$pij)
 
-
-
-#### P* equal
-P.star.equal.dt <- P.star.long.df %>% 
-  dplyr::select(i = cell.num, j = tile.id.num, pij = pij.equal) %>% 
-  as.data.table()
-
-P.star.equal.supertile.spm <- sparseMatrix(i = P.star.equal.supertile.long.df$cell.num, 
-                                            j = P.star.equal.supertile.long.df$supertile.equal.id.num, 
-                                            x = P.star.equal.supertile.long.df$pij.equal)
-
-P.star.equal.supertile.dt <- data.table(i = P.star.equal.supertile.long.df$cell.num,
-                                         j = P.star.equal.supertile.long.df$supertile.equal.id.num,
-                                         pij = P.star.equal.supertile.long.df$pij.equal)
-
-
-# P.new <- P.long.df %>% 
-#   mutate(pij.new = 1) %>% # same prob for all non-zero relationships
-#   group_by(tile.id.num) %>% 
-#   mutate(pij.new = pij.new / sum(pij.new)) %>%
-#   ungroup() %>% 
-#   as.data.table()
-# 
-# d <- P.new %>% 
-#   filter(str_detect(cell, "MA.12.")) %>% 
-#   left_join(area$area.sf, by = c("tile.id.chr")) %>% 
-#   mutate(tile.id.chr = as.character(tile.id.chr)) %>% 
-#   left_join(signal.strength.summary.helper, by = c("cell", "tile.id.chr" = "tile.id")) %>% 
-#   st_sf()
-# 
-# s.plot <- d %>% 
-#   # group_by(tile.id.chr) %>% 
-#   # mutate(f = max())  %>% 
-#   ggplot() +
-#   geom_sf(aes(fill = s), color = "transparent") +
-#   facet_wrap(vars(cell)) +
-#   labs(title = "signal dominance") +
-#   theme(axis.text = element_text(size = 4))
-# 
-# oracle.plot <- d %>% 
-#   ggplot() +
-#   geom_sf(aes(fill = pij), color = "transparent") +
-#   facet_wrap(vars(cell))+
-#   labs(title = "oracle") +
-#   theme(axis.text = element_text(size = 4))
-# 
-# 
-# equal.plot <- d %>% 
-#   ggplot() +
-#   geom_sf(aes(fill = pij.new), color = "transparent") +
-#   facet_wrap(vars(cell))+
-#   labs(title = "equal") +
-#   theme(axis.text = element_text(size = 4))
-# 
-# coverage.example <- arrangeGrob(s.plot, oracle.plot, equal.plot,
-#                                 layout_matrix = rbind(c(1),
-#                                                       c(2),
-#                                                       c(3)))
-# 
-# ggsave("coverage.example.png", coverage.example, device = "png")
-# 
-
-
-```
-
-
-# Prepare objects necessary for estimation
-
-```{r}
 ### C vector, adding antennas that have 0 phones to complete the vector, arranging it according to the antenna.ID and saving as vector
 c.vec <- P.long.complete.df %>% 
   distinct(cell, cell.num, cell.chr, phones.sum) %>% 
@@ -981,6 +866,7 @@ c.vec <- P.long.complete.df %>%
                                 TRUE ~ phones.sum)) %>% 
   arrange(cell.num)
 
+# define c-vector in datatable version
 c.vec.dt <- data.table(i = c.vec$cell.num,
                        c = c.vec$phones.sum)
 
@@ -989,26 +875,26 @@ c.vec.dt <- data.table(i = c.vec$cell.num,
 a.tile.helper <- P.long.complete.df %>% 
   mutate(a = 1) %>% 
   distinct(tile.id.num, a)
+
+# define datatable version of constant prior
 a.tile.dt <- data.table(j = a.tile.helper$tile.id.num, u = a.tile.helper$a)
 
+# define constant prior on the supertile level
 a.supertile.helper <- P.star.supertile.joiner %>% 
   group_by(supertile.id.num) %>% 
   summarise(a = n()) %>% 
   ungroup() %>% 
   distinct(supertile.id.num, a) %>% 
   deframe()
-
-a.equal.supertile.helper <- P.star.equal.supertile.joiner %>% 
-  group_by(supertile.equal.id.num) %>% 
-  summarise(a = n()) %>% 
-  ungroup() %>% 
-  distinct(supertile.equal.id.num, a) %>% 
-  deframe()
 ```
 
-```{r}
-# Voronoi
+## Estimation: Voronoi (Tower, Offset, Barycenter)
 
+Here we define 3 options of the Voronoi estimator. An option always corresponds to the seed that is used to compute the Voronoi region. Each Voronoi estimator needs the c-vector and the cellplan as main parameters.
+
+The first option is called "tower", which disregards antennas and only uses tower locations as seeds. Therefore, the c-vector is aggregated on the tower level.
+
+```{r vor-tower, fig.cap="Voronoi regions with tower locations as seeds"}
 # Voronoi estimation with tower locations as seeds
 VOR.tower <- VOR_est(area = area, 
                      cellplan.combined = cellplan.combined, 
@@ -1018,215 +904,165 @@ VOR.tower <- VOR_est(area = area,
 VOR.tower.est <- VOR.tower$seed.voronoi.final %>% 
   rename(u.VOR.tower = u.VOR)
 
+# print
+VOR.tower$Voronoi.regions.plot
 
+# save
+ggsave("Plots/VOR_regions_tower.png", VOR.tower$Voronoi.regions.plot, device = "png")
+```
+
+The second option is defined on the antenna level and uses the location of each antenna (which is the same for each antenna of the same tower) plus an adjustable offset into the broadcasting direction of the respective antenna (which results in a different location for each antenna of the same tower). Here the offset is 10m.
+
+```{r vor-offset, fig.cap="Voronoi regions with antenna offsets as seeds"}
 # Voronoi estimation with cell locations + offset as seeds
 VOR.offset <- VOR_est(area = area, 
-                     cellplan.combined = cellplan.combined, 
-                     signal.strength.comb.dt = signal.strength.comb.dt, 
-                     C.vec.df = C.vec.df, 
-                     seed = "cell.offset",
-                     offset = 10) 
+                      cellplan.combined = cellplan.combined, 
+                      signal.strength.comb.dt = signal.strength.comb.dt, 
+                      C.vec.df = C.vec.df, 
+                      seed = "cell.offset",
+                      offset = 10) 
 VOR.offset.est <- VOR.offset$seed.voronoi.final %>% 
   rename(u.VOR.offset = u.VOR)
 
+# print
+VOR.offset$Voronoi.regions.plot
 
-# Voronoi estimation with cell hotpoint locations as seeds
-VOR.hotpoint <- VOR_est(area = area, 
-                        cellplan.combined = cellplan.combined, 
-                        signal.strength.comb.dt = signal.strength.comb.dt, 
-                        C.vec.df = C.vec.df, 
-                        seed = "cell.hotpoint") 
-VOR.hotpoint.est <- VOR.hotpoint$seed.voronoi.final %>% 
-  rename(u.VOR.hotpoint = u.VOR)
+# save
+ggsave("Plots/VOR_regions_offset.png", VOR.offset$Voronoi.regions.plot, device = "png")
+```
 
+The third option is also on the antenna level and uses the barycenter (location with the strongest signal dominance value of the antenna specific coverage area) of each antenna as seed location for the computation of Voronoi regions.
+
+```{r vor-barycenter, fig.cap="Voronoi regions with antenna barycenters as seeds"}
 # Voronoi estimation with cell barycenter locations as seeds
 VOR.barycenter <- VOR_est(area = area, 
-                        cellplan.combined = cellplan.combined, 
-                        signal.strength.comb.dt = signal.strength.comb.dt, 
-                        C.vec.df = C.vec.df, 
-                        seed = "cell.barycenter") 
+                          cellplan.combined = cellplan.combined, 
+                          signal.strength.comb.dt = signal.strength.comb.dt, 
+                          C.vec.df = C.vec.df, 
+                          seed = "cell.barycenter") 
 VOR.barycenter.est <- VOR.barycenter$seed.voronoi.final %>% 
   rename(u.VOR.barycenter = u.VOR)
 
-VOR.tower$Voronoi.regions.plot
-ggsave("Voronoi/tower.png", VOR.tower$Voronoi.regions.plot, device = "png")
-VOR.offset$Voronoi.regions.plot
-ggsave("Voronoi/offset.png", VOR.offset$Voronoi.regions.plot, device = "png")
-VOR.hotpoint$Voronoi.regions.plot
-ggsave("Voronoi/hotpoint.png", VOR.hotpoint$Voronoi.regions.plot, device = "png")
+# print
 VOR.barycenter$Voronoi.regions.plot
-ggsave("Voronoi/barycenter.png", VOR.barycenter$Voronoi.regions.plot, device = "png")
 
+# save
+ggsave("Plots/VOR_regions_barycenter.png", VOR.barycenter$Voronoi.regions.plot, device = "png")
+```
+
+## Estimation: Simple Bayes
+
+The following estimators allow for overlapping coverage regions and are considered as superior. The Simple Bayes (SB) estimator needs three parameters, the c-vector, a connection probability model (P\*) and a prior vector. The following custom R-function (`EM_est()`) is basically the same for the MLE Poisson and SB estimator. The only difference is that the SB estimator uses only one (i.e. the first) iteration. Furthermore, this function contains a parameter `ldt`, which can potentially reduce the iterations until convergence. It clips all estimates below this value to exactly 0 as the original estimator could not reach exactly 0. Most parameters are assumed on the `datatable` format for computational speed purposes.
+
+```{r SB-estimator}
+# caclulate SB estimator
+SB.est <- EM_est(c.vec.dt = c.vec.dt, 
+                 P.dt = P.star.dt, 
+                 a.vec.dt = a.tile.dt, 
+                 selected.range = 1,
+                 n.iter = 1,
+                 message = F, 
+                 ldt = 10^-04) %>% 
+  dplyr::rename(tile.id = j, prior.SB = i.u, u.SB = u1)
+```
+
+## Estimation: MLE Poisson
+
+The MLE Poisson estimator assumes the same parameters as the SB estimator, plus the number of iterations it should run. For convenience, `EM_est()` contains the argument `selected.range`, which gives the user the option to specify which iterations should be delivered in the output data frame.
+
+```{r MLE-Poisson-estimator}
+# define number of iterations 
+n.iter.MLE <- 200
+
+# Time log
+MLE.time <- system.time({
+  # calculate MLE Poisson estimator
+  MLE.est <- EM_est(c.vec.dt = c.vec.dt, 
+                    P.dt = P.star.dt, 
+                    a.vec.dt = a.tile.dt, 
+                    selected.range = c(1:10, seq(20, 90, 10), seq(100, 200, 50)),
+                    n.iter = n.iter.MLE,
+                    message = F, 
+                    ldt = 10^-04) %>% 
+    rename_with(.fn = ~gsub("u", "u.MLE", x = .x, fixed = T), 
+                .cols = starts_with("u")) %>% 
+    rename(tile.id = j, prior.MLE = i.u)
+})
 
 ```
 
-# SB estimator
-```{r}
-SB.oracle.est <- EM_est(c.vec.dt = c.vec.dt, 
-                        P.dt = P.star.oracle.dt.d, 
-                        a.vec.dt = a.tile.dt, 
-                        selected.range = 1,
-                        n.iter = 1) %>% 
-  dplyr::rename(tile.id = j, prior.SB.oracle = i.u, u.SB.oracle = u1)
+One MLE iteration takes for this toyworld and the specified configurations on average ca. `r paste(round(MLE.time[[3]] / n.iter.MLE, 0))` seconds.
 
-SB.equal.est <- EM_est(c.vec.dt = c.vec.dt, 
-                       P.dt = P.star.equal.dt, 
-                       a.vec.dt = a.tile.dt, 
-                        selected.range = 1,
-                        n.iter = 1) %>% 
-  dplyr::rename(tile.id = j, prior.SB.equal = i.u, u.SB.equal = u1)
-```
+## Estimation: DF
 
-# EM estimator, 200 iterations
+The DF estimator also assumes the same parameters as the SB and MLE-Poisson estimator, however, it is computed on the supertile level. The necessary matrix inversion is computed via the Moore Penrose inverse. Given the fact that the raw DF estimate can contain negative values, it is adjusted and renormalized in the following way: All estimate values below 1 are clipped at 1 and then one iteration with `EM_est()` is conducted in order to assure that the final estimates are of the same mass as the c-vector. Therefore, the DF estimator is the raw DF estimate after one iteration (DF1).
 
-```{r}
-# EM equal probability
-EM.equal.est <- EM_est(c.vec.dt = c.vec.dt, 
-                       P.dt = P.star.equal.dt, 
-                       a.vec.dt = a.tile.dt, 
-                       selected.range = c(1:10, 20, 50, seq(100, 200, 50)),
-                       n.iter = 200) %>% 
-  rename_with(.fn = ~gsub("u", "u.EM.equal", x = .x, fixed = T), 
+As another configuration, this notebook contains an adjusted MLE Poisson estimator, where the prior vector is the adjusted and renormalized DF estimate vector. This is coined in the following as DF200 which means that contains the estimates after 200 iterations.
+
+```{r DF-estimator}
+# Time log
+DF.raw.time <- system.time({
+  # calculate raw DF estimates with supertiles
+  DF.raw.est <- DF_est(c.vec.dt = c.vec.dt, 
+                       P.star.spm = P.star.supertile.spm, 
+                       a.supertile.vec = a.supertile.helper)
+  # adjust raw DF estimate (clip)
+  DF.raw.est.dt <- data.table(j = as.numeric(names(a.supertile.helper)),
+                              u = DF.raw.est) %>%
+    .[, u := fifelse(u < 1, 1, u)] # clip lower values than 1 to 1
+})
+
+## Renormalizing with EM and bringing estimate on regular tile.id level
+DF.est <- EM_est(c.vec.dt = c.vec.dt, 
+                 P.dt = P.star.supertile.dt, 
+                 a.vec.dt = DF.raw.est.dt,
+                 selected.range = c(1:10, seq(20, 90, 10), seq(100, 200, 50)),
+                 n.iter = n.iter.MLE,
+                 message = F,
+                 ldt = 10^-04) %>% 
+  rename_with(.fn = ~gsub("u", "u.DF", x = .x, fixed = T), 
               .cols = starts_with("u")) %>% 
-  rename(tile.id = j, prior.EM.equal = i.u)
-
-# EM oracle 
-EM.oracle.est <- EM_est(c.vec.dt = c.vec.dt, 
-                        P.dt = P.star.oracle.dt.d, 
-                        a.vec.dt = a.tile.dt, 
-                        selected.range = c(1:10, seq(20, 90, 10), seq(100, 200, 50)),
-                        n.iter = 200) %>% 
-  rename_with(.fn = ~gsub("u", "u.EM.oracle", x = .x, fixed = T), 
-              .cols = starts_with("u")) %>% 
-  rename(tile.id = j, prior.EM.oracle = i.u)
-```
-
-
-# 1 DF estimator with EM iterations
-
-```{r}
-## DF oracle
-
-DF.oracle.est <- DF_est(c.vec.dt = c.vec.dt, 
-                        P.star.spm = P.star.oracle.supertile.spm, 
-                        a.supertile.vec = a.supertile.helper)
-DF.oracle.est.dt <- data.table(j = as.numeric(names(a.supertile.helper)),
-                               u = DF.oracle.est) %>%
-  .[, u := fifelse(u < 1, 1, u)] # set negative values immediately to 0
-
-## Renormalizing with EM and bringing estimate on tile.id level
-DF_EM.oracle.est <- EM_est(c.vec.dt = c.vec.dt, 
-                           P.dt = P.star.oracle.supertile.dt, a.vec.dt = DF.oracle.est.dt,
-                           selected.range = c(1:10, seq(20, 90, 10), seq(100, 200, 50)),
-                           n.iter = 200) %>% 
-  rename_with(.fn = ~gsub("u", "u.DF_EM.oracle", x = .x, fixed = T), 
-              .cols = starts_with("u")) %>% 
-  rename(supertile.id.num = j, prior.DF_EM.oracle = i.u) %>%
+  rename(supertile.id.num = j, prior.DF = i.u) %>%
   right_join(area$area.df.complete, by = "supertile.id.num") %>% 
   group_by(supertile.id) %>% 
   mutate(across(starts_with("u"), ~ . / n())) %>% 
   ungroup() %>% 
   dplyr::select(tile.id, starts_with("u"))
-
-
-## DF equal
-
-DF.equal.est <- DF_est(c.vec.dt = c.vec.dt, 
-                       P.star.spm = P.star.equal.supertile.spm, 
-                       a.supertile.vec = a.equal.supertile.helper)
-DF.equal.est.dt <- data.table(j = as.numeric(names(a.equal.supertile.helper)),
-                              u = DF.equal.est) %>%
-  .[, u := fifelse(u < 1, 1, u)] # set negative values immediately to 0 or 1
-
-## Renormalizing with EM and bringing estimate on tile.id level
-DF_EM.equal.est <- EM_est(c.vec.dt = c.vec.dt, 
-                          P.dt = P.star.equal.supertile.dt, 
-                          a.vec.dt = DF.equal.est.dt,
-                          selected.range = c(1:10, seq(20, 90, 10), seq(100, 200, 50)),
-                          n.iter = 200) %>% 
-  rename_with(.fn = ~gsub("u", "u.DF_EM.equal", x = .x, fixed = T), 
-              .cols = starts_with("u")) %>% 
-  rename(supertile.equal.id.num = j, prior.DF_EM.equal = i.u) %>%
-  right_join(area$area.df.complete, by = "supertile.equal.id.num") %>% 
-  group_by(supertile.equal.id) %>% 
-  mutate(across(starts_with("u"), ~ . / n())) %>% 
-  ungroup() %>% 
-  dplyr::select(tile.id, starts_with("u"))
 ```
 
-
-# DF estimator with iterations and dynamic threshold (T/k)
-```{r}
-DF_iterator.oracle.est <- DF_est_iterated(c.vec.dt = c.vec.dt, 
-                                          P.star.spm = P.star.oracle.supertile.spm, 
-                                          a.supertile.vec = a.supertile.helper, 
-                                          P.dt = P.star.oracle.supertile.dt, 
-                                          DF.threshold = 1,
-                                          selected.range = c(1:10, seq(20, 90, 10), seq(100, 200, 50)),
-                                          n.iter.DF = 200) %>% 
-  rename_with(.fn = ~gsub("u", "u.DF_iterator.oracle", x = .x, fixed = T), 
-              .cols = starts_with("u")) %>% 
-  rename(supertile.id.num = j, prior.DF_iterator.oracle = prior) %>%
-  right_join(area$area.df.complete, by = "supertile.id.num") %>% 
-  group_by(supertile.id) %>% 
-  mutate(across(starts_with("u"), ~ . / n())) %>% 
-  ungroup() %>% 
-  dplyr::select(tile.id, starts_with("u"))
-
-
-# DF_iterator.equal.est <- DF_est_iterated(c.vec.dt = c.vec.dt, 
-#                                          P.star.spm = P.star.equal.supertile.spm, 
-#                                          a.supertile.vec = a.equal.supertile.helper, 
-#                                          P.dt = P.star.equal.supertile.dt, 
-#                                          DF.threshold = 1,
-#                                          selected.range = c(1:10, seq(20, 90, 10), seq(100, 200, 50)),
-#                                          n.iter.DF = 200) %>% 
-#   rename_with(.fn = ~gsub("u", "u.DF_iterator.equal", x = .x, fixed = T), 
-#               .cols = starts_with("u")) %>% 
-#   rename(supertile.equal.id.num = j, prior.DF_iterator.equal = prior) %>%
-#   right_join(area$area.df.complete, by = "supertile.equal.id.num") %>% 
-#   group_by(supertile.equal.id.num) %>% 
-#   mutate(across(starts_with("u"), ~ . / n())) %>% 
-#   ungroup() %>% 
-#   dplyr::select(tile.id, starts_with("u"))
-
-```
-
-# Putting all estimates together
-```{r}
-final.estimates.sf <- area$area.sf %>% 
-  left_join(VOR.tower.est, by = "tile.id") %>% 
-  left_join(VOR.offset.est, by = "tile.id") %>% 
-  left_join(VOR.hotpoint.est, by = "tile.id") %>% 
-  left_join(VOR.barycenter.est, by = "tile.id") %>% 
-  left_join(SB.equal.est, by = "tile.id") %>%
-  left_join(SB.oracle.est, by = "tile.id") %>%
-  left_join(EM.equal.est, by = "tile.id") %>%
-  left_join(EM.oracle.est, by = "tile.id") %>% 
-  left_join(DF_EM.equal.est, by = "tile.id") %>% 
-  left_join(DF_EM.oracle.est, by = "tile.id") %>% 
-  # left_join(DF_iterator.equal.est, by = "tile.id") %>% 
-  left_join(DF_iterator.oracle.est, by = "tile.id") 
-  
-final.estimates.df <- final.estimates.sf %>% 
-  st_drop_geometry()
-
-names.estimates <- final.estimates.sf %>% 
-  # dplyr::select(pop, starts_with("u.")) %>% # all estimates
-  dplyr::select(pop, matches("VOR|u.SB|oracle200|equal200")) %>% # only specific ones for mapping
-  st_drop_geometry() %>% 
-  names() 
-
-```
-
-
+Computing the raw DF-estimate (renormalized but without further MLE iterations) takes for this toyworld and the specified configurations ca. `r paste(round(DF.raw.time[[3]] + (MLE.time[[3]] / n.iter.MLE), 0))` seconds.
 
 # Evaluation
 
-## Density plots
+The last part of this notebook follows through with evaluating the different estimators based on the following indicators: 1d density, 2d density, Spatial density (i.e., geographical maps), KWD, and Convergence based on KWD. Further evaluation metrics or different version of the listed ones will be added at a later stage.
 
-```{r}
+## Evaluation: Setup
 
+```{r evaluation-setup}
+# putting everything into an sf-dataframe together
+final.estimates.sf <- area$area.sf %>% 
+  left_join(VOR.tower.est, by = "tile.id") %>% 
+  left_join(VOR.offset.est, by = "tile.id") %>% 
+  left_join(VOR.barycenter.est, by = "tile.id") %>% 
+  left_join(SB.est, by = "tile.id") %>%
+  left_join(MLE.est, by = "tile.id") %>% 
+  left_join(DF.est, by = "tile.id")
+
+# non-sf version
+final.estimates.df <- final.estimates.sf %>% 
+  st_drop_geometry()
+
+# vector with names of the relevant estimates
+names.estimates <- final.estimates.sf %>% 
+  # dplyr::select(pop, starts_with("u.")) %>% # all estimates
+  dplyr::select(pop, matches("VOR|u.SB|DF1$|200")) %>% # only "final" ones for mapping
+  st_drop_geometry() %>% 
+  names() 
+```
+
+## Evaluation: 1d Density
+
+```{r 1d-density, warning=FALSE, fig.cap="Comparing ECCDF of estimates to the GTP"}
 # calculate density dataset for all estimates and GTP 
 cdf.compare <- final.estimates.df %>% 
   dplyr::select(tile.id, all_of(names.estimates)) %>% 
@@ -1236,7 +1072,8 @@ cdf.compare <- final.estimates.df %>%
   map(~dplyr::select(., cum.prob.comp, pop.plot)) %>%
   map(~mutate(., cum.prob.comp = round(cum.prob.comp, 3))) %>% # effective plot sample --> faster plotting excluding overplot
   map_dfr(~distinct(.), .id = "type")
-  
+## Warning in mask$eval_all_mutate(quo): NANs can be present
+
 
 # ECCDF plot
 (ECCDF.pop.plot <- cdf.compare %>% 
@@ -1244,296 +1081,29 @@ cdf.compare <- final.estimates.df %>%
     geom_line(aes(x = pop.plot, y = cum.prob.comp,
                   color = type), size = 1) + 
     scale_color_ptol() +
-    scale_y_log10(labels = scales::trans_format("log10", scales::math_format(10^.x))) +
-    scale_x_log10(labels = scales::trans_format("log10", scales::math_format(10^.x))) +
+    scale_y_log10(labels = scales::trans_format("log10", 
+                                                scales::math_format(10^.x)),
+                  minor_breaks = minor.breaks) +
+    scale_x_log10(labels = scales::trans_format("log10", 
+                                                scales::math_format(10^.x)),
+                  minor_breaks = minor.breaks) +
     annotation_logticks(sides = "lb") +
     labs(title = "ECCDF of estimators and GTP", y = "log10(ECCDF)", x = "log10(Mobile phones)",  
          colour = "") +
     theme(legend.position = "bottom"))
-  
-ggsave("eccdf.estimates.png", ECCDF.pop.plot, device = "png")
 
-# ECDF.pop.plot <- ECDF.df %>%   
-  #   ggplot() + 
-  #   geom_point(aes(x = pop.plot, y = cum.prob.comp,
-  #                  color = type
-  #                  )) + 
-  #   scale_color_ptol() +
-  #   xlim(0, 30) +
-  #   labs(title = "", y = "", x = "") +
-  #   theme(legend.position = "none",
-  #         plot.margin = unit(c(-0.5, 0, 0, -0.5), "cm")) 
-  
-  
-  # combined <- ECCDF.pop.plot +
-  #   annotation_custom(ggplotGrob(ECDF.pop.plot), 
-  #                     xmin = 0, xmax = 1.5, 
-  #                     ymin = min(ECCDF.df$log10.cum.prob.comp, na.rm = T), ymax = -1.5)
+ggsave("Plots/eccdf.estimates.png", ECCDF.pop.plot, device = "png")
 ```
 
+## Evaluation: 2d Density
 
-## Spatial density evaluation
-
-```{r}
-
-maps.labels <- list("GTP   ", "VOR_t ", "VOR_o ", "VOR_h ", "VOR_b ", "SB_e  ", "SB_o  ", 
-                    "EM_e  ", "EM_o  ", "DF_EMo", "DF_EMe", "DF_DFo")
-
-# check if there is divergence, what are the maximum estimates per tile for each estimator
-max.maps <- final.estimates.sf %>% 
-  st_drop_geometry() %>% 
-  dplyr::select(tile.id, pop, matches("VOR|u.SB|oracle200|equal200")) %>% # only specific ones for mapping
-  summarise_all(max) %>% 
-  pivot_longer(cols = -tile.id, names_to = "estimator", values_to = "estimate")
-
-
-# Define break points for discretized spatial density plots
-breaks <- c(0, 2, 10, 20, 50, 100, 200, 500, 1000, Inf)
-maps.input <- final.estimates.sf %>% 
-  dplyr::select(tile.id, pop, all_of(names.estimates)) %>% 
-  mutate(across(c(pop, starts_with("u.")), ~cut(., breaks = breaks, dig.lab = 7, right = F)))
-  # mutate(across(c(pop, starts_with("u.")), ~log10(. + 1)))
-
-# Build plots
-(maps.estimation.density <- names.estimates %>%
-  map2(., maps.labels, ~map_density(data = maps.input, var = .x, label = .y)) %>%
-  set_names(names.estimates))
-
-ggsave("Maps/pop.png", maps.estimation.density$pop, device = "png")
-ggsave("Maps/u.VOR.tower.png", maps.estimation.density$u.VOR.tower, device = "png")
-ggsave("Maps/u.VOR.offset.png", maps.estimation.density$u.VOR.offset, device = "png")
-ggsave("Maps/u.VOR.hotpoint.png", maps.estimation.density$u.VOR.hotpoint, device = "png")
-ggsave("Maps/u.VOR.barycenter.png", maps.estimation.density$u.VOR.barycenter, device = "png")
-ggsave("Maps/u.SB.equal.png", maps.estimation.density$u.SB.equal, device = "png")
-ggsave("Maps/u.SB.oracle.png", maps.estimation.density$u.SB.oracle, device = "png")
-ggsave("Maps/u.EM.equal200.png", maps.estimation.density$u.EM.equal200, device = "png")
-ggsave("Maps/u.EM.oracle200.png", maps.estimation.density$u.EM.oracle200, device = "png")
-ggsave("Maps/u.DF_EM.equal200.png", maps.estimation.density$u.DF_EM.equal200, device = "png")
-ggsave("Maps/u.DF_EM.oracle200.png", maps.estimation.density$u.DF_EM.oracle200, device = "png")
-ggsave("Maps/u.DF_DF.oracle200.png", maps.estimation.density$u.DF_EM.oracle200, device = "png")
-
-```
-
-## KWD evaluation 
-
-### Prep
-
-```{r}
-
-# define additional necessary rescalings of the area (next to 1x1)
-rescale.factor.list <- list(area.2x2 = 2, 
-                            area.4x4 = 4, 
-                            area.8x8 = 8)
-
-# aggregate estimate values based on rescaling level
-area.rescaled.grid <- map(rescale.factor.list, 
-            ~st_make_grid(area$area.sf, cellsize = area$area.params[["base.tile.size"]] * .x))
-```
-
-
-### KWD all estimates 2x2
-
-```{r}
-kwd.helper.est <- final.estimates.sf %>% 
-  dplyr::select(-c(elevation, type)) %>%
-  mutate(u.flat = mean(pop)) %>% 
-  aggregate(by = area.rescaled.grid$area.2x2, FUN = sum, join = st_contains) %>%
-  mutate(lon = map_dbl(geometry, ~st_centroid(.x)[[1]]),
-         lat = map_dbl(geometry, ~st_centroid(.x)[[2]])) %>% 
-  st_drop_geometry()
-
-coordinates <- kwd.helper.est %>% 
-  dplyr::select(lon, lat) %>% 
-  as.matrix()
-
-weights <- kwd.helper.est %>% 
-  dplyr::select(pop, matches("u.")) %>% 
-  as.matrix()
-
-kwd.final <- compareOneToMany(coordinates, weights, L = 3, recode = TRUE)
-cat("runtime:", kwd.final$runtime, " distance:", kwd.final$distance, " nodes:", 
-    kwd.final$nodes, "arcs:", kwd.final$arcs, "\n")
-
-names.weights <- colnames(weights)[-1]
-
-kwd.eval <- tibble(estimator = names.weights,
-                   kwd = kwd.final$distance * rescale.factor.list$area.2x2) %>%  # rescaling according to scale
-  mutate(kwd.lower.bound = kwd - ((kwd / 100) * 1.29)) %>%  # for L=3 within 1 percent 
-  mutate(iteration = str_extract(estimator, "[[:digit:]]+"),
-         kind = str_extract(estimator, "[[:alpha:][:punct:]]+")) %>%
-  mutate(iteration = case_when(is.na(iteration) ~ 0,
-                               TRUE ~ as.numeric(iteration))) %>% 
-  mutate(time.var = as.numeric(iteration) * 1,
-         time.fix = case_when(str_detect(kind, "DF") ~ 3,
-                              str_detect(kind, "u.EM") ~ 0)) %>%  # 11 min MP inverse
-  mutate(time.final = (time.var + time.fix)) %>%
-  group_by(kind) %>% 
-  mutate(min.kwd.kind = min(kwd),
-         kind.group = row_number() / max(row_number())) %>% # find minimum per estimator (for ordering help)
-  ungroup() %>% 
-  arrange(desc(min.kwd.kind), iteration) %>% 
-  mutate(final.order = row_number()) %>% 
-  mutate(estimator.new = factor(final.order, labels = estimator))
-```
-#### KWD 2x2 final estimates
-
-```{r}
-flat.ref.2x2 <- round(as.numeric(kwd.eval[kwd.eval$estimator == "u.flat", "kwd"]), 2)
-
-(kwd.final.estimates.plot.2x2 <- kwd.eval %>% 
-    filter(kind.group == 1,
-           !str_detect(estimator, "flat|prior")) %>% 
-    ggplot(aes(x = estimator.new, y = kwd, fill = kind, alpha = kind.group)) + 
-    geom_bar(stat = "identity", position = position_dodge(width = 0.9)) + 
-    geom_errorbar(aes(ymin = kwd.lower.bound, ymax = kwd), position = dodge, width = 0.25) +
-    geom_text(aes(x = estimator.new, y = kwd, label = round(kwd, 2)), 
-              position = position_dodge(0.1), hjust = -0.1, color = "Black", size = 3) +
-    scale_alpha(range = c(0.5, 1), 
-                guide = F
-                # labels = unique(kwd.eval$iteration)
-                ) + # noch ändern
-    scale_fill_ptol(guide = FALSE) +
-    coord_flip() +
-    labs(x = "", y = "KWD", 
-         alpha = "Iteration", 
-         subtitle = paste0("(Reference: Flat = ", flat.ref.2x2, ")")) + 
-    theme(legend.position = "bottom"))
-
-ggsave(filename = "kwd final/kwd.final.estimates.2x2.plot.png", plot = kwd.final.estimates.plot.2x2, device = "png")
-```
-
-
-
-
-
-
-### KWD 1x1
-needs adjustment and takes long to run
-
-```{r}
-# # KWD evaluation
-# 
-# rescale.factor <- 1
-# 
-# # area.2x2 <- area$area.sf %>% 
-# #   dplyr::select(tile.id, pop) %>% 
-# #   st_make_grid(cellsize = area$area.params[["base.tile.size"]] * rescale.factor)
-# 
-# kwd.helper.est <- final.estimates.sf %>% 
-#   # dplyr::select(tile.id, pop, starts_with("u.")) %>% 
-#   dplyr::select(tile.id, all_of(names.estimates)) %>%
-#   mutate(u.flat = mean(pop)) %>% 
-#   # aggregate(by = area.2x2, FUN = sum, join = st_contains) %>% 
-#   mutate(lon = map_dbl(geometry, ~st_centroid(.x)[[1]]),
-#          lat = map_dbl(geometry, ~st_centroid(.x)[[2]])) %>% 
-#   st_drop_geometry()
-# 
-# coordinates <- kwd.helper.est %>% 
-#   dplyr::select(lon, lat) %>% 
-#   as.matrix()
-# 
-# weights <- kwd.helper.est %>% 
-#   dplyr::select(pop, matches("u.")) %>% 
-#   as.matrix()
-# 
-# kwd.final <- compareOneToMany(coordinates, weights, L = 3, recode = TRUE)
-# cat("runtime:", kwd.final$runtime, " distance:", kwd.final$distance, " nodes:", 
-#     kwd.final$nodes, "arcs:", kwd.final$arcs, "\n")
-# 
-# names.weights <- colnames(weights)[-1]
-# kwd.eval <- tibble(estimator = names.weights,
-#                    kwd = kwd.final$distance * rescale.factor) %>%  # rescaling according to scale
-#   mutate(kwd.lower.bound = kwd - ((kwd / 100) * 1.29)) %>%  # for L=3 within 1 percent 
-#   mutate(iteration = str_extract(estimator, "[[:digit:]]+"),
-#          kind = str_extract(estimator, "[[:alpha:][:punct:]]+")) %>%
-#   mutate(iteration = case_when(is.na(iteration) ~ 0,
-#                                TRUE ~ as.numeric(iteration))) %>% 
-#   group_by(kind) %>% 
-#   mutate(min.kwd.kind = min(kwd),
-#          kind.group = row_number() / max(row_number())) %>% # find minimum per estimator (for ordering help)
-#   ungroup() %>% 
-#   arrange(desc(min.kwd.kind), iteration) %>% 
-#   mutate(final.order = row_number()) %>% 
-#   mutate(estimator.new = factor(final.order, labels = estimator))
-# 
-# flat.ref <- round(as.numeric(kwd.eval[kwd.eval$estimator == "u.flat", "kwd"]), 2)
-# 
-# dodge <- position_dodge(width = 0.9)
-# 
-# (kwd.complete.plot <- kwd.eval %>% 
-#     filter(kind.group == 1,
-#            !str_detect(estimator, "flat")) %>% 
-#     ggplot(aes(x = estimator.new, y = kwd, fill = kind, alpha = kind.group)) + 
-#     geom_bar(stat = "identity", position = dodge) + 
-#     geom_errorbar(aes(ymin = kwd.lower.bound, ymax = kwd), position = dodge, width = 0.25) +
-#     geom_text(aes(x = estimator.new, y = kwd, label = round(kwd, 2)), 
-#               position = position_dodge(0.1), hjust = -0.1, color = "Black", size = 3) +
-#     scale_alpha(range = c(0.5, 1), 
-#                 guide = F
-#                 # labels = unique(kwd.eval$iteration)
-#                 ) + # noch ändern
-#     scale_fill_ptol(guide = FALSE) +
-#     coord_flip() +
-#     labs(x = "", y = "KWD", 
-#          alpha = "Iteration", 
-#          subtitle = paste0("(Reference: Flat = ", flat.ref, ")")) + 
-#     theme(legend.position = "bottom"))
-# 
-# ggsave(filename = "kwd final/kwd.complete.1x1.plot.png", plot = kwd.complete.plot, device = "png")
-```
-
-#### kwd convergence (EM and DF)
-
-```{r}
-
-kwd.eval.convergence <- kwd.eval %>% 
-  filter(!iteration == 0)
-
-(kwd.convergence.plot.log.text <- kwd.eval.convergence %>% 
-    dplyr::select(estimator, kwd, kwd.lower.bound, iteration, kind) %>% 
-    ggplot(aes(x = iteration, y = kwd)) +
-    geom_line(aes(color = kind)) +
-    geom_point(aes(color = kind)) +
-    geom_ribbon(aes(ymin = kwd.lower.bound, ymax = kwd, group = kind), alpha = 0.2) +
-    geom_text_repel(aes(color = kind, label = round(kwd, 2)), size = 3, show.legend  = F) +
-    scale_x_log10(labels = scales::trans_format("log10", scales::math_format(10^.x))) +
-    annotation_logticks(sides = "b") +
-    labs(color = "Estimator",
-         x = "Iteration",
-         y = "KWD"))
-
-
-ggsave("kwd convergence/kwd.2x2.convergence.png", kwd.convergence.plot.log.text, device = "png")
-
-
-(time.convergence.plot <- kwd.eval.convergence %>% 
-    dplyr::select(estimator, time.final, iteration, kind) %>% 
-    ggplot() +
-    geom_line(aes(x = iteration, y = time.final, color = kind)) +
-    geom_point(aes(x = iteration, y = time.final, color = kind)) +
-    scale_color_discrete(breaks = c("u.DF_EM.oracle", "u.EM.oracle"), labels = c("DF", "EM")) +
-    labs(color = "Estimator",
-         x = "Iteration",
-         y = "Time in seconds"))
-  
-ggsave("kwd convergence/time.png", time.convergence.plot, device = "png")
-
-```
-
-
-
- continue here
-# rescaling level evaluation
-
-
-```{r}
-
+```{r 2d-density, warning=FALSE, message=FALSE}
+# names of specified estimators for order control
 names.order.estimator <- c("u.flat", 
-                           "u.VOR.tower", "u.VOR.offset", "u.VOR.hotpoint", "u.VOR.barycenter",
-                           "u.SB.equal", "u.SB.oracle",
-                           "u.EM.equal", "u.EM.oracle", 
-                           "u.DF_EM.equal", "u.DF_EM.oracle",
-                           "u.DF_DF.oracle", "u.DF_DF.equal")
+                           "u.VOR.tower", "u.VOR.offset", "u.VOR.barycenter",
+                           "u.SB",
+                           "u.MLE", 
+                           "u.DF")
 
 # define additional necessary rescalings of the area (next to 1x1)
 rescale.factor.list <- list(area.1x1 = 1,
@@ -1543,17 +1113,18 @@ rescale.factor.list <- list(area.1x1 = 1,
 
 # aggregate estimate values based on rescaling level
 area.rescaled.grid <- map(rescale.factor.list, 
-            ~st_make_grid(area$area.sf, cellsize = area$area.params[["base.tile.size"]] * .x))
+                          ~st_make_grid(area$area.sf, cellsize = area$area.params[["base.tile.size"]] * .x))
 
-
+# define relevant estimates
 mse.relevant.estimators <- final.estimates.sf %>% 
   dplyr::select(tile.id, pop, matches("VOR|SB|flat|1|10|100|200")) %>% 
   dplyr::select(-matches("prior"))
-  
 
+# develop a list element with grid aggregated values
 mse.est <- map(area.rescaled.grid, ~aggregate(mse.relevant.estimators, by = .x, FUN = mean, join = st_contains)) %>% 
   map(~st_drop_geometry(.))
 
+# define data frame with the necessary variables for visualization of estimate vs. GTP
 point <- mse.est %>% 
   map(~mutate(., tile.id.rescaled = row_number())) %>% 
   map(~dplyr::select(., tile.id.rescaled, pop, starts_with("u."))) %>% 
@@ -1568,22 +1139,183 @@ point <- mse.est %>%
 
 
 # selected estimators (iterations) for 2d density plots
-scatter.names <- c("u.EM.oracle1", "u.EM.oracle10", "u.EM.oracle100", "u.EM.oracle200",
+scatter.names <- c("u.MLE1", "u.MLE10", "u.MLE100", "u.MLE200",
                    "u.VOR.barycenter", "u.VOR.tower")
 
+# custom 2d density plots
 scatter.density.plots <- scatter.names %>% 
   map(~scatter_density(point, estimator.name = .x)) %>%
   set_names(scatter.names)
 
-ggsave("2d_density/u.EM.oracle1.density.png", scatter.density.plots$u.EM.oracle1, device = "png")
-ggsave("2d_density/u.EM.oracle10.density.png", scatter.density.plots$u.EM.oracle10, device = "png")
-ggsave("2d_density/u.EM.oracle100.density.png", scatter.density.plots$u.EM.oracle100, device = "png")
-ggsave("2d_density/u.EM.oracle200.density.png", scatter.density.plots$u.EM.oracle200, device = "png")
-ggsave("2d_density/u.VOR.barycenter.png", scatter.density.plots$u.VOR.barycenter, device = "png")
-ggsave("2d_density/u.VOR.tower.png", scatter.density.plots$u.VOR.tower, device = "png")
+# print
+ggpubr::as_ggplot(scatter.density.plots$u.MLE1)
+ggpubr::as_ggplot(scatter.density.plots$u.MLE10)
+ggpubr::as_ggplot(scatter.density.plots$u.MLE100)
+ggpubr::as_ggplot(scatter.density.plots$u.MLE200)
+ggpubr::as_ggplot(scatter.density.plots$u.VOR.barycenter)
+ggpubr::as_ggplot(scatter.density.plots$u.VOR.tower)
 
+# save
+ggsave("Plots/u.MLE1.2d.density.png", scatter.density.plots$u.MLE1, device = "png")
+ggsave("Plots/u.MLE10.2d.density.png", scatter.density.plots$u.MLE10, device = "png")
+ggsave("Plots/u.MLE100.2d.density.png", scatter.density.plots$u.MLE100, device = "png")
+ggsave("Plots/u.MLE200.2d.density.png", scatter.density.plots$u.MLE200, device = "png")
+ggsave("Plots/u.VOR.barycenter.2d.density.png", scatter.density.plots$u.VOR.barycenter, device = "png")
+ggsave("Plots/u.VOR.tower.2d.density.png", scatter.density.plots$u.VOR.tower, device = "png")
+```
+
+## Evaluation: Spatial Density
+
+```{r spatial-estimates-maps, message=FALSE}
+# define legend labels for maps
+maps.labels <- list("GTP  ", 
+                    "VOR_t", "VOR_o", "VOR_b", 
+                    "SB   ", "MLE  ", "DF1  ", "DF200")
+
+# check if there is divergence, what are the maximum estimates per tile for each estimator
+max.maps <- final.estimates.sf %>% 
+  st_drop_geometry() %>% 
+  dplyr::select(tile.id, pop, matches("VOR|u.SB|DF1$|200")) %>% # only specific ones for mapping
+  summarise_all(max) %>% 
+  pivot_longer(cols = -tile.id, names_to = "estimator", values_to = "estimate")
+
+
+# Define break points for discretized spatial density plots
+breaks <- c(0, 2, 5, 10, 20, 50, 100, 200, 350, Inf)
+maps.input <- final.estimates.sf %>% 
+  dplyr::select(tile.id, pop, all_of(names.estimates)) %>% 
+  mutate(across(c(pop, starts_with("u.")), ~cut(., breaks = breaks, dig.lab = 7, right = F)))
+
+# Build maps and print
+(maps.estimation.density <- names.estimates %>%
+    map2(., maps.labels, ~map_density(data = maps.input, var = .x, label = .y)) %>%
+    set_names(names.estimates))
+
+# save
+ggsave("Plots/pop.map.png", maps.estimation.density$pop, device = "png")
+ggsave("Plots/u.VOR.tower.map.png", maps.estimation.density$u.VOR.tower, device = "png")
+ggsave("Plots/u.VOR.offset.map.png", maps.estimation.density$u.VOR.offset, device = "png")
+ggsave("Plots/u.VOR.barycenter.map.png", maps.estimation.density$u.VOR.barycenter, device = "png")
+ggsave("Plots/u.SB.map.png", maps.estimation.density$u.SB, device = "png")
+ggsave("Plots/u.MLE200.map.png", maps.estimation.density$u.MLE200, device = "png")
+ggsave("Plots/u.DF1.map.png", maps.estimation.density$u.DF1, device = "png")
+ggsave("Plots/u.DF200.map.png", maps.estimation.density$u.DF200, device = "png")
+
+```
+
+## Evaluation: KWD
+
+Computing the Kantorovitch Wassterstein Distance (KWD), a.k.a. Earth Movers Distance, is done by using the package of Prof. Stefano Gualandi `SpatialKWD`. This package is the result of the article that is referenced [here](https://epubs.siam.org/doi/abs/10.1137/19M1261195?casa_token=f2nek1tmXtgAAAAA%3AkuwTSnCg8ETBNBiazggdPcqxBycf05v94Bs1rbadLETmMgk5o5Q7_DxTIz15WYxPcVWgv2vrwQ&), which develops a computationally efficient approximation method of the KWD. The package offers the very convenient function `compareOneToMany()`, which assumes the main parameters `Coordinates`, `Weights` and `L`. The first describes the point coordinates of each tile, for which we use the centroid of each tile, the second uses the GTP and the estimates, the third parameter specifies the approximation, i.e. the accuracy of the approximated KWD. Here, we use the default (`L = 3`), which basically means that the approximation error will be in the worst case 1.29%. The output value is used as an upper bound for the KWD estimate and the worst case adjustment acts as a lower bound.
+
+This function is particularly convenient, as it allows to implement the `Weights` object to be a matrix, i.e. as many estimates can be implemented as the user wants. The first column is always assumed to be the GTP, which also acts as the reference.
+
+```{r kwd-setup}
+# develop dataframe with GTP, all estimates and tile centroids
+kwd.helper.est <- final.estimates.sf %>% 
+  dplyr::select(-c(elevation, type)) %>%
+  mutate(u.flat = mean(pop)) %>% 
+  st_centroid() %>% 
+  mutate(lon = unlist(map(.$geometry, 1)),
+         lat = unlist(map(.$geometry, 2))) %>% 
+  st_drop_geometry()
+
+# Coordinates object
+coordinates <- kwd.helper.est %>% 
+  dplyr::select(lon, lat) %>% 
+  as.matrix()
+
+# Weights object
+weights <- kwd.helper.est %>% 
+  dplyr::select(pop, matches("u.")) %>% 
+  as.matrix()
+
+# Approximation parameter (the higher the more accurate)
+L = 3
+
+# Run KWD
+kwd.final <- compareOneToMany(coordinates, weights, L = L, recode = TRUE)
+paste("KWD runtime ( L =", L, "):", round(kwd.final$runtime / 60, 0), "min for", 
+      ncol(weights) - 1, "estimates and", 
+      length(final.estimates.df$tile.id), "tiles")
+
+# Define names for estimators
+names.weights <- colnames(weights)[-1]
+
+# Develop data frame on the estimtor level with respective KWD values
+kwd.eval <- tibble(estimator = names.weights,
+                   kwd = kwd.final$distance * 1) %>%  # rescaling according to scale
+  mutate(kwd.lower.bound = kwd - ((kwd / 100) * 1.29)) %>%  # for L=3 within 1 percent 
+  mutate(iteration = str_extract(estimator, "[[:digit:]]+"),
+         kind = str_extract(estimator, "[[:alpha:][:punct:]]+")) %>%
+  mutate(iteration = case_when(is.na(iteration) ~ 0,
+                               TRUE ~ as.numeric(iteration))) %>% 
+  group_by(kind) %>% 
+  mutate(min.kwd.kind = min(kwd),
+         kind.group = row_number() / max(row_number())) %>% # find minimum per estimator (for ordering help)
+  ungroup() %>% 
+  arrange(desc(min.kwd.kind), iteration) %>% 
+  mutate(final.order = row_number()) %>% 
+  mutate(estimator.new = factor(final.order, labels = estimator))
+```
+
+```{r kwd-final-estimates-plot, fig.cap="KWD (L=3) values of the final estimates"}
+# define the flat estimator KWD value for reference purposes
+# this is only implemented as a caption in the following plot to prevent scale distortiton
+flat.ref <- round(as.numeric(kwd.eval[kwd.eval$estimator == "u.flat", "kwd"]), 2)
+
+# develop KWD bar plot for selected estimators
+(kwd.final.estimates.plot <- kwd.eval %>% 
+    filter(kind.group == 1 | estimator == "u.DF1",
+           !str_detect(estimator, "flat|prior")) %>% 
+    ggplot(aes(x = estimator.new, y = kwd, fill = kind, alpha = kind.group)) + 
+    geom_bar(stat = "identity", position = position_dodge(width = 0.9)) + 
+    geom_errorbar(aes(ymin = kwd.lower.bound, ymax = kwd), position = position_dodge(width = 0.9), width = 0.25) +
+    geom_text(aes(x = estimator.new, y = kwd, label = round(kwd, 2)), 
+              position = position_dodge(0.1), hjust = -0.1, color = "Black", size = 3) +
+    scale_alpha(range = c(0.5, 1), 
+                guide = F
+                # labels = unique(kwd.eval$iteration)
+    ) + 
+    scale_fill_ptol(guide = FALSE) +
+    coord_flip() +
+    labs(x = "", y = "KWD", 
+         alpha = "Iteration", 
+         subtitle = paste0("(Reference: Flat = ", flat.ref, ")")) + 
+    theme(legend.position = "bottom"))
+
+# save
+ggsave(filename = "Plots/kwd.final.estimates.plot.png", plot = kwd.final.estimates.plot, device = "png")
+```
+
+## Evaluation: KWD convergence
+
+```{r kwd-convergence-plot, fig.cap="Convergence behavior of adjusted and renormlaized DF and MLE Poisson estimator in terms of KWD"}
+
+# keep only iterated estimators
+kwd.eval.convergence <- kwd.eval %>% 
+  filter(!iteration == 0)
+
+# develop line plot
+(kwd.convergence.plot.log.text <- kwd.eval.convergence %>% 
+    dplyr::select(estimator, kwd, kwd.lower.bound, iteration, kind) %>% 
+    ggplot(aes(x = iteration, y = kwd)) +
+    geom_line(aes(color = kind)) +
+    geom_point(aes(color = kind)) +
+    geom_ribbon(aes(ymin = kwd.lower.bound, ymax = kwd, group = kind), alpha = 0.2) +
+    geom_text_repel(aes(color = kind, label = round(kwd, 2)), size = 3, show.legend  = F) +
+    scale_x_log10(labels = scales::trans_format("log10", scales::math_format(10^.x)),
+                  minor_breaks = minor.breaks) +
+    annotation_logticks(sides = "b") +
+    labs(color = "Estimator",
+         x = "Iteration",
+         y = "KWD"))
+
+# save
+ggsave("Plots/kwd.convergence.png", kwd.convergence.plot.log.text, device = "png")
 
 
 ```
 
-
+```{r}
+sessionInfo()
+```
