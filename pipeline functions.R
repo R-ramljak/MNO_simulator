@@ -1023,7 +1023,7 @@ scatter_density <- function(point, estimator.name){
   minor.breaks <- rep(1:9, 21) * (10^rep(-10:10, each = 9))
   
   log.both <- base.data.ls %>% 
-    map(~ggplot(., aes(x = log10(pop + 1), y = log10(estimate + 1))) +
+    map(~ggplot(., aes(x = pop + 1, y = estimate + 1)) +
           geom_pointdensity(size = 0.4) +
           scale_color_viridis(guide = F) +
           geom_abline(intercept = 0, slope = 1, linetype = "dotted") +
