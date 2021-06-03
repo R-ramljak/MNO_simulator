@@ -17,7 +17,7 @@ pop_gen <- function(tile.num, base.tile.size,
                     city.num, city.size, city.shape = "SQUARE", 
                     hole.num, hole.size, hole.shape = "SQUARE",
                     pop.dist.ls) {
-
+  
   
   # save area parameters
   area.params <- list(tile.num = tile.num, 
@@ -87,7 +87,7 @@ pop_gen <- function(tile.num, base.tile.size,
     left_join(pop.dist.df, by = "type") %>% 
     mutate(final = paste0(exprssion, ", n = ", n, ")")) %>% 
     arrange(type)
-    
+  
   # sample pop vector from input distribution function
   pop.helper <- unlist(map(summary.area$final, ~eval(parse(text = .x))))
   
@@ -96,7 +96,10 @@ pop_gen <- function(tile.num, base.tile.size,
     mutate(pop = pop.helper) %>% 
     mutate(pop = round(pop, 0)) %>%
     mutate(pop = if_else(pop < 0, 0, pop)) %>%
-    dplyr::select(tile.id, type, category, pop) %>%
+    mutate(centroid.geometry = st_centroid(.$geometry)) %>% 
+    mutate(X.centroid = unlist(map(.$centroid.geometry, 1)),
+           Y.centroid = unlist(map(.$centroid.geometry, 2))) %>% 
+    dplyr::select(tile.id, type, category, pop, X.centroid, Y.centroid) %>%
     arrange(tile.id)
   
   # create non-sf data frame version
@@ -213,11 +216,11 @@ create_cellplan <- function(area.sf, area.bbox, area.elevation, cells.unparam, c
                                     elevation = area.elevation
                                     # region = region,
                                     # envir = envir
-                                    ) 
-    # mutate(move_cells_into_prop_direction(., offset = 100)) %>% 
-    # mutate(x.offset = st_coordinates(.)[, 1],
-    #        y.offset = st_coordinates(.)[, 2]) %>% 
-    # st_drop_geometry()
+  ) 
+  # mutate(move_cells_into_prop_direction(., offset = 100)) %>% 
+  # mutate(x.offset = st_coordinates(.)[, 1],
+  #        y.offset = st_coordinates(.)[, 2]) %>% 
+  # st_drop_geometry()
   
   # put everything into a list
   final <- list(cellplan.val = cellplan.val,
@@ -228,7 +231,7 @@ create_cellplan <- function(area.sf, area.bbox, area.elevation, cells.unparam, c
 }
 
 
-smart.round <- function(x, digits = 0) {
+smart_round <- function(x, digits = 0) {
   up <- 10 ^ digits
   x <- x * up
   y <- floor(x)
@@ -241,7 +244,7 @@ smart.round <- function(x, digits = 0) {
 # implement selected iterations option with input vector
 
 # New MLE iteration function by Matyas
-EM_est <- function(c.vec.dt, P.dt, a.vec.dt, n.iter, selected.range, ldt = 10^-04) {
+EM_est <- function(c.vec.dt, P.dt, a.vec.dt, n.iter, selected.range, ldt = 10^-04, message = T) {
   
   cdt <- c.vec.dt
   pij <- cdt[P.dt, on = "i"]
@@ -252,7 +255,11 @@ EM_est <- function(c.vec.dt, P.dt, a.vec.dt, n.iter, selected.range, ldt = 10^-0
   keep <- a.vec.dt # base dataframe for the selected iterations
   
   for(m in 1:(n.iter)){
-    cat(format(Sys.time()), paste0("---- calculating u", m), "----\n")
+    
+    if(message == T) {
+      cat(format(Sys.time()), paste0("---- calculating u", m), "----\n")
+    }
+    
     cols <- c("j", paste0("u"))
     ju <- tiles[, cols, with = F]
     setnames(ju, c("j", "u"))
@@ -329,6 +336,64 @@ DF_est <- function(c.vec.dt, P.star.spm, a.supertile.vec){
   
   return(u)
 }
+
+
+DF_est_iterated <- function(c.vec.dt, P.star.spm, a.supertile.vec, P.dt, DF.threshold = 1, selected.range.DF, n.iter.DF){
+  
+  c.vec <- c(c.vec.dt)$c
+  
+  DF.tiles <- data.table(j = as.numeric(names(a.supertile.vec)),
+                         u = a.supertile.vec)
+  keep <- data.table(j = as.numeric(names(a.supertile.vec)),
+                     prior = a.supertile.vec)
+  
+  for(m.DF in 1:(n.iter.DF)){
+    
+    m.DF = 1
+    
+    
+    # time/iteration indication
+    cat(format(Sys.time()), paste0("---- calculating u", m.DF), "----\n")
+    
+    # specify prior (A)
+    U.spm <- .sparseDiagonal(n = length(a.supertile.vec), x = DF.tiles$u)
+    
+    # calculate DF
+    Y <- P.star.spm %*% U.spm %*% t(P.star.spm)
+    Y1 <- VCA::MPinv(Y) %*% (c.vec - P.star.spm %*% a.supertile.vec)
+    u.unadj <- as.vector(U.spm %*% t(P.star.spm) %*% Y1 + a.supertile.vec)
+    
+    # save as datatable
+    DF.tiles <- data.table(j = as.numeric(names(a.supertile.vec)),
+                           u = u.unadj)
+    
+    # Transforming based on dynamic DF.threshold
+    # DF.tiles <- eval(parse(text = paste0("DF.tiles[, u := fifelse(u < (DF.threshold / m.DF), DF.threshold / m.DF, u)]")))
+    DF.tiles[, u := fifelse(u < (DF.threshold / m.DF), DF.threshold / m.DF, u)]
+    
+    # Renormalizing with 1 EM iteration
+    u.dt <- EM_est(c.vec.dt = c.vec.dt,
+                   P.dt = P.star.oracle.supertile.dt,
+                   a.vec.dt = DF.tiles,
+                   selected.range = c(1,2, 3),
+                   n.iter = 3)
+    setnames(u.dt, c("j", "u.prior", "u"))
+    u.dt.final <- u.dt[, c("j", "u")]
+    DF.tiles <- DF.tiles[, "j"]
+    DF.tiles <- u.dt.final[DF.tiles, on = "j"]
+    
+    # define datatable object "keep" which contains only the iterations that were indicated in DF.selected.range
+    if(m.DF %in% selected.range.DF) {
+      keep <- DF.tiles[keep, on = "j"]
+      keep <- eval(parse(text = paste0("keep[, u", m.DF, ":= u]")))
+      keep[, "u" := NULL]
+    }
+    
+  }
+  
+  return(keep)
+}
+
 
 
 # paramter: sim.area, cellplan.combined, signal.strength.comb.dt, c.vec.df, method, offset
@@ -564,59 +629,29 @@ VOR_est <- function(area, cellplan.combined, signal.strength.comb.dt, C.vec.df, 
 ### Plots #########
 ###################
 
-map_density <- function(data, var, label) {
+map_density <- function(data, var, label, pointsize = 1.9, pixels = c(900, 900)) {
   
+  colors <- c("white", "light grey", "light blue", "blue", "light green", "yellow", "orange", "red", "#654321")
   var.label <- paste(label)
   
   plot <- data %>% 
-    ggplot() +
-    geom_sf(aes_string(fill = var), color = "transparent") +
-    scale_fill_gradient(low = "white", high = "black",
-                        limits = c(0, max(data$pop)), 
-                        # breaks = c(0, 171), labels = c(0, 171)
-                        ) +
-    theme_minimal() +
-    theme(axis.title.x = element_blank(),
-          axis.text.x = element_blank(),
-          axis.ticks.x = element_blank(),
-          axis.title.y = element_blank(),
-          axis.text.y = element_blank(),
-          axis.ticks.y = element_blank()) +
-    labs(title = var.label,
-         fill = "Phone Estimate")
+    ggplot(aes(x = X.centroid, y = Y.centroid)) +
+    # geom_sf(aes_string(fill = var), color = "transparent") +
+    geom_scattermore(aes_string(color = var), pointsize = pointsize, pixels = pixels) +
+    # scico::scale_fill_scico(palette = "bilbao", limits = c(0, 3.48), direction = 1) +
+    scale_color_manual(values = colors, drop = F, name = label)
+  # theme(axis.title.x = element_blank(),
+  #       axis.text.x = element_blank(),
+  #       axis.ticks.x = element_blank(),
+  #       axis.title.y = element_blank(),
+  #       axis.text.y = element_blank(),
+  #       axis.ticks.y = element_blank()) +
+  
   
   return(plot)
 }
 
 
-map_density_limitless <- function(data, var, label) {
-  
-  var.label <- paste(label)
-  
-  plot <- data %>% 
-    ggplot() +
-    geom_sf(aes_string(fill = var, color = var)) +
-    scale_fill_gradient(low = "white", high = "black",
-                        # limits = c(0, 171), 
-                        # breaks = c(0, 171), labels = c(0, 171)
-    ) +
-    scale_color_gradient(low = "white", high = "black", 
-                         guide = F, 
-                         # limits = c(0, 171), 
-                         # breaks = c(0, 171), labels = c(0, 171)
-    )  +
-    theme_minimal() +
-    theme(axis.title.x = element_blank(),
-          axis.text.x = element_blank(),
-          axis.ticks.x = element_blank(),
-          axis.title.y = element_blank(),
-          axis.text.y = element_blank(),
-          axis.ticks.y = element_blank()) +
-    labs(title = var.label,
-         fill = "Phone Estimate")
-  
-  return(plot)
-}
 
 
 r2d <- function(x) x * 180 / pi
@@ -693,9 +728,15 @@ sig_param_plots <- function(param.df, range.max = 20000, base_size = 11) {
     mutate(below.dominance.th = case_when(sig.dom >= dominance.th ~ "Above", 
                                           sig.dom < dominance.th ~ "Below"))
   
+  minor.breaks <- rep(1:9, 21) * (10^rep(-10:10, each = 9))
   
-  strength.distance.plot <- ggplot(df, aes(x = distance.log10, y = dBm)) + 
+  
+  strength.distance.plot <- ggplot(df, aes(x = distance, y = dBm)) + 
     geom_line(aes(color = label), size = 1.4) +
+    scale_x_log10(labels = scales::trans_format("log10", 
+                                                scales::math_format(10^.x)),
+                  minor_breaks = minor.breaks) +
+    annotation_logticks(sides = "b") +
     labs(title = "Distance vs. Signal strength", 
          x = "log10(Distance (m))",
          y = "Signal strength (dBm)",
@@ -826,18 +867,30 @@ pop_summary_results <- function(data) {
               max.pop = max(pop),
               sum.pop = sum(pop)) %>% 
     mutate_if(is.numeric, round, 2)
-    # left_join(pop.dist.df, by = "type")
+  # left_join(pop.dist.df, by = "type")
   
-  }
-  
-  
+}
+
+
 
 ### Pop Density plots 
 #############
 
+# custom_ecdf_prep <- function(data) {
+#   dat <- data %>% 
+#     mutate(pop.plot = pop + 1) %>%  
+#     arrange(pop.plot) %>%  
+#     mutate(prob = 1 / n()) %>%  
+#     mutate(cum.prob = cumsum(prob)) %>%  
+#     mutate(cum.prob.comp = 1 - cum.prob) %>%  
+#     mutate(log10.cum.prob.comp = log10(cum.prob.comp)) %>% 
+#     mutate(log10.pop = log10(pop.plot)) %>%  
+#     mutate(cum.prob.comp = 1 - cum.prob)
+#   
+#   return(dat)
+# }
+
 density_plots <- function(data) {
-  
-  
   
   custom_ecdf_prep <- function(data) {
     dat <- data %>% 
@@ -853,6 +906,7 @@ density_plots <- function(data) {
     return(dat)
   }
   
+  minor.breaks <- rep(1:9, 21) * (10^rep(-10:10, each = 9))
   
   pop.emp.dist <- data %>% 
     ungroup() %>% 
@@ -868,24 +922,32 @@ density_plots <- function(data) {
     mutate(cum.prob.comp = round(cum.prob.comp, 3)) %>% # effective plot sample --> faster plotting excluding overplot
     distinct()
   
-  ECCDF.pop.plot <- ECCDF.df %>%   
+  ECCDF.pop.plot <- ECDF.df %>%   
     ggplot() + 
-    geom_point(aes(x = log10.pop, y = log10.cum.prob.comp,
-                   color = type)) + 
-    geom_hline(yintercept = -0.3010300, linetype = "dotted") + 
-    geom_hline(yintercept = -1, linetype = "dotted") + 
-    geom_text(x = 1.8, y = -0.15, label = "50% of the data") + 
-    geom_text(x = 1.8, y = -0.8, label = "90% of the data") + 
+    geom_point(aes(x = pop.plot, y = cum.prob.comp
+                   # color = type
+    )) + 
+    # geom_hline(yintercept = -0.3010300, linetype = "dotted") + 
+    # geom_hline(yintercept = -1, linetype = "dotted") + 
+    # geom_text(x = 1.8, y = -0.15, label = "50% of the data") + 
+    # geom_text(x = 1.8, y = -0.8, label = "90% of the data") + 
     scale_color_ptol() + 
-    labs(title = "ECCDF (Insert ECDF capped at 30)", y = "log10(ECCDF)", x = "log10(Mobile phones)",  
+    scale_y_log10(labels = scales::trans_format("log10", 
+                                                scales::math_format(10^.x)),
+                  minor_breaks = minor.breaks) +
+    scale_x_log10(labels = scales::trans_format("log10", 
+                                                scales::math_format(10^.x)),
+                  minor_breaks = minor.breaks) +
+    annotation_logticks(sides = "lb") +
+    labs(title = "ECCDF (Insert ECDF capped at 30)", y = "ECCDF", x = "Mobile phones",  
          colour = "") + 
     theme(legend.position = "bottom") 
   
   ECDF.pop.plot <- ECDF.df %>%   
     ggplot() + 
-    geom_point(aes(x = pop.plot, y = cum.prob.comp,
-                   color = type
-                   )) + 
+    geom_point(aes(x = pop.plot, y = cum.prob.comp
+                   # color = type
+    )) + 
     scale_color_ptol() +
     xlim(0, 30) +
     labs(title = "", y = "", x = "") +
@@ -896,7 +958,7 @@ density_plots <- function(data) {
   combined <- ECCDF.pop.plot +
     annotation_custom(ggplotGrob(ECDF.pop.plot), 
                       xmin = 0, xmax = 1.5, 
-                      ymin = min(ECCDF.df$log10.cum.prob.comp, na.rm = T), ymax = -1.5)
+                      ymin = -3, ymax = -1.5)
   
   # return(list(ECDF = ECDF.pop.plot,
   #             ECCDF = ECCDF.pop.plot))
@@ -931,8 +993,7 @@ scatter_density <- function(point, estimator.name){
   complete.plot.final <- arrangeGrob(complete.plot[[1]], complete.plot[[2]], complete.plot[[3]], complete.plot[[4]],
                                      top = textGrob(paste("Joint Density", estimator.name) , gp = gpar(fontsize = 10)),
                                      # padding = 2,
-                                     layout_matrix = rbind(c(1, 2),
-                                                           c(3, 4)))
+                                     layout_matrix = rbind(c(1, 2, 3, 4)))
   # ggsave("2d_density/d.png", complete.plot.final, device = "png")
   # grid.arrange(complete.plot[[1]], complete.plot[[2]], complete.plot[[3]], complete.plot[[4]],
   #             padding = 0,
@@ -957,15 +1018,22 @@ scatter_density <- function(point, estimator.name){
   zoom.xy.final <- arrangeGrob(zoom.xy[[1]], zoom.xy[[2]], zoom.xy[[3]], zoom.xy[[4]],
                                # padding = 0,
                                top = textGrob("Zoom on XY", gp = gpar(fontsize = 10)),
-                               layout_matrix = rbind(c(1, 2),
-                                                     c(3, 4)))
+                               layout_matrix = rbind(c(1, 2, 3, 4)))
   
+  minor.breaks <- rep(1:9, 21) * (10^rep(-10:10, each = 9))
   
   log.both <- base.data.ls %>% 
     map(~ggplot(., aes(x = log10(pop + 1), y = log10(estimate + 1))) +
           geom_pointdensity(size = 0.4) +
           scale_color_viridis(guide = F) +
           geom_abline(intercept = 0, slope = 1, linetype = "dotted") +
+          scale_y_log10(labels = scales::trans_format("log10", 
+                                                      scales::math_format(10^.x)),
+                        minor_breaks = minor.breaks) +
+          scale_x_log10(labels = scales::trans_format("log10", 
+                                                      scales::math_format(10^.x)),
+                        minor_breaks = minor.breaks) +
+          annotation_logticks(sides = "lb") +
           labs(title = "",
                x = "",
                y = "") +
@@ -977,15 +1045,13 @@ scatter_density <- function(point, estimator.name){
   log.both.final <- arrangeGrob(log.both[[1]], log.both[[2]], log.both[[3]], log.both[[4]],
                                 # padding = 0,
                                 top = textGrob("Joint Density log10", gp = gpar(fontsize = 10)),
-                                layout_matrix = rbind(c(1, 2),
-                                                      c(3, 4)))
+                                layout_matrix = rbind(c(1, 2, 3, 4)))
   
   scatter.density <- arrangeGrob(complete.plot.final, zoom.xy.final, log.both.final,
                                  # padding = 0,
-                                 layout_matrix = rbind(c(1, 1),
-                                                       c(1, 1),
-                                                       c(2, 3),
-                                                       c(2, 3)))
+                                 layout_matrix = rbind(c(1),
+                                                       c(2),
+                                                       c(3)))
   
   return(scatter.density)
   
@@ -1053,4 +1119,26 @@ P_equalizer <- function(P.long.df, signal.strength.comb.dt) {
   
   return(P.model.equal.final)
   
+}
+
+
+custom_ecdf_prep <- function(data) {
+  dat <- data %>% 
+    mutate(pop.plot = values + 1) %>%  
+    arrange(pop.plot) %>%  
+    mutate(prob = 1 / n()) %>%  
+    mutate(cum.prob = cumsum(prob)) %>%  
+    mutate(cum.prob.comp = 1 - cum.prob) %>%  
+    mutate(log10.cum.prob.comp = log10(cum.prob.comp)) %>% 
+    mutate(log10.pop = log10(pop.plot)) %>%  
+    mutate(cum.prob.comp = 1 - cum.prob)
+  
+  return(dat)
+}
+
+
+## dev to cell
+c.vec.sampler <- function(x) {
+  data.table(sample(x = as.character(x$cell), size = mean(x$pop),
+                    replace = T, prob = x$pij))
 }

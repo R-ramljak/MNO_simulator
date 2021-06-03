@@ -23,7 +23,7 @@ Furthermore, custom functions have been built and are used throughout this noteb
 
 # General Setup: Loading Packages and Custom Functions
 
-```{r}
+```{r packages, message=FALSE}
 # Data manipulation
 library(tidyverse)
 library(data.table) 
@@ -1183,7 +1183,7 @@ max.maps <- final.estimates.sf %>%
 # Define break points for discretized spatial density plots
 breaks <- c(0, 2, 5, 10, 20, 50, 100, 200, 350, Inf)
 maps.input <- final.estimates.sf %>% 
-  dplyr::select(tile.id, pop, all_of(names.estimates)) %>% 
+  dplyr::select(tile.id, pop, X.centroid, Y.centroid, all_of(names.estimates)) %>% 
   mutate(across(c(pop, starts_with("u.")), ~cut(., breaks = breaks, dig.lab = 7, right = F)))
 
 # Build maps and print
