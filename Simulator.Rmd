@@ -15,7 +15,7 @@ knit: (function(input_file, encoding) { out_dir <- 'docs'; rmarkdown::render(inp
   encoding=encoding, output_file=file.path(dirname(input_file), out_dir, 'index.html'))})
 ---
 
-This notebook shows the first version of the MNO analysis pipeline. The notebook has three main parts: Toyworld Generation, Estimation, Evaluation. The pipieline is constructed in a modular way and each part represents one module. This means that one can start and finish the pipeline to ones own liking at any starting or end point of a module. 
+This notebook shows the first version of the MNO analysis pipeline. The notebook has three main parts: Toyworld Generation, Estimation, Evaluation. The pipieline is constructed in a modular way and each part represents one module. This means that one can start and finish the pipeline to ones own liking at any starting or end point of a module.
 
 The toyworld is based on a semi-synthetic data generated process. For this, census data from Germany on a 100m\*100m regular grid has been used, which can be downloaded [here](https://www.zensus2011.de/DE/Home/Aktuelles/DemografischeGrunddaten.html?nn=3065474). Each element in this grid is expressed as a tile. For computation purposes only a small area of Germany was used for the toyworld, namely the area of Munich and its near surroundings. This focus area includes 160,000 tiles. For a mobile phone population the regular census population values are used. To mimic the mobile phone population of one mobile network operator (MNO) the population is reduced to about a third.
 
@@ -67,7 +67,7 @@ source("pipeline functions.R")
 
 # Toyworld Generation
 
-This part is concerned with generating a toyworld that is based on the above specified focus area. After specifying the population aspect of the toyworld, the radio network will be specified. 
+This part is concerned with generating a toyworld that is based on the above specified focus area. After specifying the population aspect of the toyworld, the radio network will be specified.
 
 ## Toyworld Generation: Population
 
@@ -132,7 +132,6 @@ area$area.sf %>%
   map_density(data = ., var = "pop.cat", label = "GTP")
 
 ```
-
 
 ```{r pop-summary}
 # summary descriptives of GTP
@@ -314,133 +313,133 @@ paste0("Number of tiles which do not reach the signal dominance threshold of: " 
 The following chunk is merely executed to develop a smoother visualization of the radio cell coverage profiles. For this, the signal strength is calculated on a finer grid 25m\*25m. This finer grid is only relevant for this chunk and the following contour visualizations. The contours are interpolated based on the tiles' signal dominance values and the tile centroids.
 
 ```{r contur-plot-setup, message=FALSE}
-# specifiy how much finer the grid should be
-finer.grid.factor <- 2
-finer.grid.tile.id <- c(1:640000) # adjust to grid factor
-
-# disaggregate the regular grid based on the finer.grid.factor
-area$area.raster.finer <- disaggregate(area$area.raster, finer.grid.factor) %>% 
-  setValues(., finer.grid.tile.id)
-
-# disaggregate the elevation grid based on the finer.grid.factor
-area$area.elevation.finer <- disaggregate(area$area.elevation, finer.grid.factor)
-
-# transform raster back to sf
-area$area.finer.grid.sf <- st_as_sf(st_as_stars(area$area.raster.finer))
-
-# compute signal strength and device to cell association for finer grid for each layer
-MA.signal.strength.finer <- compute_sig_strength(cp = MA.cellplan.val$cellplan.val, 
-                                                 raster = area$area.raster.finer, 
-                                                 param = MA.cellplan.val$cell.param.mobloc, 
-                                                 elevation = area$area.elevation.finer)
-
-ME.signal.strength.finer <- compute_sig_strength(cp = ME.cellplan.val$cellplan.val,
-                                                 raster = area$area.raster.finer,
-                                                 param = ME.cellplan.val$cell.param.mobloc,
-                                                 elevation = area$area.elevation.finer)
-
-MI.signal.strength.finer <- compute_sig_strength(cp = MI.cellplan.val$cellplan.val,
-                                                 raster = area$area.raster.finer,
-                                                 param = MI.cellplan.val$cell.param.mobloc,
-                                                 elevation = area$area.elevation.finer)
-
-signal.strength.comb.dt.finer.grid <- rbindlist(list(MA.signal.strength.finer,
-                                                     ME.signal.strength.finer,
-                                                     MI.signal.strength.finer))
-
-
-# calculate tile centroid for each tile on the finer grid
-area.reduced.contour <- area$area.finer.grid.sf %>% 
-  dplyr::select(tile.id.num = tile.id) %>% 
-  st_centroid() %>% 
-  mutate(lon = unlist(map(.$geometry, 1)),
-         lat = unlist(map(.$geometry, 2)))
-
-# set the coordinate reference system
-crs.set <- st_crs(area.reduced.contour)
-
-# compute the antenna specfic broadcasting profile contour
-# define two categories: contour of signal dominance values below or equal to 0.5 and above 0.5 resulting later in two contour lines per antenna
-contour.data.raw <- signal.strength.comb.dt.finer.grid %>%
-  as_tibble() %>%
-  mutate(tile.id.num = as.numeric(rid)) %>%
-  mutate(cell.chr = as.character(cell)) %>%
-  left_join(cellplan.combined, by = c("cell.chr" = "cell")) %>% 
-  filter(!s < dominance.th) %>% 
-  mutate(s.discrete = case_when(s <= 0.5 ~ 1,
-                                s > 0.5 ~ 2)) %>% # define categoristation of contours
-  dplyr::select(cell, cell.kind, x.tow = x, y.tow = y, direction, tile.id.num, s, s.discrete) %>% 
-  left_join(area.reduced.contour, by = c("tile.id.num")) %>% 
-  st_as_sf(coords = c("lon", "lat"), crs = crs.set) 
-
-# split according to layer
-contour.data.raw.split <- contour.data.raw %>% 
-  st_drop_geometry() %>% 
-  split(.$cell.kind) %>% 
-  map(~distinct(., cell, x.tow, y.tow))
-
-# summarise antenna specific contour as polygon and then compute the convex hull to result in simple contour line
-contour.data.summary <- contour.data.raw %>% 
-  dplyr::select(cell, cell.kind, s.discrete, s) %>% 
-  dplyr::group_by(cell, cell.kind, s.discrete) %>%
-  dplyr::summarise() %>%
-  st_convex_hull()
+# # specifiy how much finer the grid should be
+# finer.grid.factor <- 2
+# finer.grid.tile.id <- c(1:640000) # adjust to grid factor
+# 
+# # disaggregate the regular grid based on the finer.grid.factor
+# area$area.raster.finer <- disaggregate(area$area.raster, finer.grid.factor) %>% 
+#   setValues(., finer.grid.tile.id)
+# 
+# # disaggregate the elevation grid based on the finer.grid.factor
+# area$area.elevation.finer <- disaggregate(area$area.elevation, finer.grid.factor)
+# 
+# # transform raster back to sf
+# area$area.finer.grid.sf <- st_as_sf(st_as_stars(area$area.raster.finer))
+# 
+# # compute signal strength and device to cell association for finer grid for each layer
+# MA.signal.strength.finer <- compute_sig_strength(cp = MA.cellplan.val$cellplan.val, 
+#                                                  raster = area$area.raster.finer, 
+#                                                  param = MA.cellplan.val$cell.param.mobloc, 
+#                                                  elevation = area$area.elevation.finer)
+# 
+# ME.signal.strength.finer <- compute_sig_strength(cp = ME.cellplan.val$cellplan.val,
+#                                                  raster = area$area.raster.finer,
+#                                                  param = ME.cellplan.val$cell.param.mobloc,
+#                                                  elevation = area$area.elevation.finer)
+# 
+# MI.signal.strength.finer <- compute_sig_strength(cp = MI.cellplan.val$cellplan.val,
+#                                                  raster = area$area.raster.finer,
+#                                                  param = MI.cellplan.val$cell.param.mobloc,
+#                                                  elevation = area$area.elevation.finer)
+# 
+# signal.strength.comb.dt.finer.grid <- rbindlist(list(MA.signal.strength.finer,
+#                                                      ME.signal.strength.finer,
+#                                                      MI.signal.strength.finer))
+# 
+# 
+# # calculate tile centroid for each tile on the finer grid
+# area.reduced.contour <- area$area.finer.grid.sf %>% 
+#   dplyr::select(tile.id.num = tile.id) %>% 
+#   st_centroid() %>% 
+#   mutate(lon = unlist(map(.$geometry, 1)),
+#          lat = unlist(map(.$geometry, 2)))
+# 
+# # set the coordinate reference system
+# crs.set <- st_crs(area.reduced.contour)
+# 
+# # compute the antenna specfic broadcasting profile contour
+# # define two categories: contour of signal dominance values below or equal to 0.5 and above 0.5 resulting later in two contour lines per antenna
+# contour.data.raw <- signal.strength.comb.dt.finer.grid %>%
+#   as_tibble() %>%
+#   mutate(tile.id.num = as.numeric(rid)) %>%
+#   mutate(cell.chr = as.character(cell)) %>%
+#   left_join(cellplan.combined, by = c("cell.chr" = "cell")) %>% 
+#   filter(!s < dominance.th) %>% 
+#   mutate(s.discrete = case_when(s <= 0.5 ~ 1,
+#                                 s > 0.5 ~ 2)) %>% # define categoristation of contours
+#   dplyr::select(cell, cell.kind, x.tow = x, y.tow = y, direction, tile.id.num, s, s.discrete) %>% 
+#   left_join(area.reduced.contour, by = c("tile.id.num")) %>% 
+#   st_as_sf(coords = c("lon", "lat"), crs = crs.set) 
+# 
+# # split according to layer
+# contour.data.raw.split <- contour.data.raw %>% 
+#   st_drop_geometry() %>% 
+#   split(.$cell.kind) %>% 
+#   map(~distinct(., cell, x.tow, y.tow))
+# 
+# # summarise antenna specific contour as polygon and then compute the convex hull to result in simple contour line
+# contour.data.summary <- contour.data.raw %>% 
+#   dplyr::select(cell, cell.kind, s.discrete, s) %>% 
+#   dplyr::group_by(cell, cell.kind, s.discrete) %>%
+#   dplyr::summarise() %>%
+#   st_convex_hull()
 ```
 
-```{r contour-MA, fig.cap="Coverage Contour of Macro cells, showing the area with less or equal than 0.5 signal dominance"}
-(contour.complete.MA <- contour.data.summary %>% 
-  filter(cell.kind == "MA" & s.discrete == "1") %>% 
-  ggplot() +
-  geom_sf(data = area$area.union) +
-  geom_sf(color = "red", fill = "transparent") +
-  geom_point(data = contour.data.raw.split$MA, aes(x = x.tow, y = y.tow), color = "black", shape = 2) +
-  theme_minimal() +
-  labs(x = "", y = ""))
-ggsave("Plots/contour.complete.MA.finer.png", contour.complete.MA, device = "png")
-```
+<!-- ```{r contour-MA, fig.cap="Coverage Contour of Macro cells, showing the area with less or equal than 0.5 signal dominance"} -->
+<!-- (contour.complete.MA <- contour.data.summary %>%  -->
+<!--   filter(cell.kind == "MA" & s.discrete == "1") %>%  -->
+<!--   ggplot() + -->
+<!--   geom_sf(data = area$area.union) + -->
+<!--   geom_sf(color = "red", fill = "transparent") + -->
+<!--   geom_point(data = contour.data.raw.split$MA, aes(x = x.tow, y = y.tow), color = "black", shape = 2) + -->
+<!--   theme_minimal() + -->
+<!--   labs(x = "", y = "")) -->
+<!-- ggsave("Plots/contour.complete.MA.finer.png", contour.complete.MA, device = "png") -->
+<!-- ``` -->
 
-```{r contour-ME, fig.cap="Coverage Contour of Meso cells, showing the area with less or equal than 0.5 signal dominance"}
-(contour.complete.ME <- contour.data.summary %>% 
-  filter(cell.kind == "ME" & s.discrete == "1") %>% 
-  ggplot() +
-  geom_sf(data = area$area.union) +
-  geom_sf(color = "red", fill = "transparent") +
-  geom_point(data = contour.data.raw.split$ME, aes(x = x.tow, y = y.tow), color = "blue", shape = 2) +
-  theme_minimal() +
-  labs(x = "", y = ""))
-ggsave("Plots/contour.complete.ME.finer.png", contour.complete.ME, device = "png")
+<!-- ```{r contour-ME, fig.cap="Coverage Contour of Meso cells, showing the area with less or equal than 0.5 signal dominance"} -->
+<!-- (contour.complete.ME <- contour.data.summary %>%  -->
+<!--   filter(cell.kind == "ME" & s.discrete == "1") %>%  -->
+<!--   ggplot() + -->
+<!--   geom_sf(data = area$area.union) + -->
+<!--   geom_sf(color = "red", fill = "transparent") + -->
+<!--   geom_point(data = contour.data.raw.split$ME, aes(x = x.tow, y = y.tow), color = "blue", shape = 2) + -->
+<!--   theme_minimal() + -->
+<!--   labs(x = "", y = "")) -->
+<!-- ggsave("Plots/contour.complete.ME.finer.png", contour.complete.ME, device = "png") -->
 
-```
+<!-- ``` -->
 
-```{r contour-MI, fig.cap="Coverage Contour of Micro cells, showing the area with less or equal than 0.5 signal dominance"}
-(contour.complete.MI <- contour.data.summary %>% 
-  filter(cell.kind == "MI" & s.discrete == "1") %>% 
-  ggplot() +
-  geom_sf(data = area$area.union) +
-  geom_sf(color = "red", fill = "transparent") +
-  geom_point(data = contour.data.raw.split$MI, aes(x = x.tow, y = y.tow), color = "green", shape = 2) +
-  theme_minimal() +
-  labs(x = "", y = ""))
-ggsave("Plots/contour.complete.MI.finer.png", contour.complete.MI, device = "png")
-```
+<!-- ```{r contour-MI, fig.cap="Coverage Contour of Micro cells, showing the area with less or equal than 0.5 signal dominance"} -->
+<!-- (contour.complete.MI <- contour.data.summary %>%  -->
+<!--   filter(cell.kind == "MI" & s.discrete == "1") %>%  -->
+<!--   ggplot() + -->
+<!--   geom_sf(data = area$area.union) + -->
+<!--   geom_sf(color = "red", fill = "transparent") + -->
+<!--   geom_point(data = contour.data.raw.split$MI, aes(x = x.tow, y = y.tow), color = "green", shape = 2) + -->
+<!--   theme_minimal() + -->
+<!--   labs(x = "", y = "")) -->
+<!-- ggsave("Plots/contour.complete.MI.finer.png", contour.complete.MI, device = "png") -->
+<!-- ``` -->
 
-```{r contour-certain, fig.cap="Coverage Contour of a sample cell of each layer, showing the discretized signal dominance (cell profile)"}
+<!-- ```{r contour-certain, fig.cap="Coverage Contour of a sample cell of each layer, showing the discretized signal dominance (cell profile)"} -->
 
-(contour.certain <- contour.data.summary %>% 
-  filter(str_detect(cell, "MA.12.|ME.100.|MI.18.")) %>% 
-  ggplot() +
-  geom_sf(data = area$area.union) +
-  geom_sf(aes(color = factor(s.discrete)), fill = "transparent") +
-  geom_point(data = contour.data.raw.split$MA, aes(x = x.tow, y = y.tow), color = "black", shape = 2) +
-  geom_point(data = contour.data.raw.split$ME, aes(x = x.tow, y = y.tow), color = "blue", shape = 2) +
-  geom_point(data = contour.data.raw.split$MI, aes(x = x.tow, y = y.tow), color = "green", shape = 2) +
-  scale_color_discrete("Signal dom.", breaks = c("1", "2"), labels = c("0.05 <= s < 0.5",
-                                                                      "s >= 0.5")) +
-  theme_minimal() +
-  labs(x = "", y = ""))
-ggsave("Plots/hull.certain.finer.png", contour.certain, device = "png")
+<!-- (contour.certain <- contour.data.summary %>%  -->
+<!--   filter(str_detect(cell, "MA.12.|ME.100.|MI.18.")) %>%  -->
+<!--   ggplot() + -->
+<!--   geom_sf(data = area$area.union) + -->
+<!--   geom_sf(aes(color = factor(s.discrete)), fill = "transparent") + -->
+<!--   geom_point(data = contour.data.raw.split$MA, aes(x = x.tow, y = y.tow), color = "black", shape = 2) + -->
+<!--   geom_point(data = contour.data.raw.split$ME, aes(x = x.tow, y = y.tow), color = "blue", shape = 2) + -->
+<!--   geom_point(data = contour.data.raw.split$MI, aes(x = x.tow, y = y.tow), color = "green", shape = 2) + -->
+<!--   scale_color_discrete("Signal dom.", breaks = c("1", "2"), labels = c("0.05 <= s < 0.5", -->
+<!--                                                                       "s >= 0.5")) + -->
+<!--   theme_minimal() + -->
+<!--   labs(x = "", y = "")) -->
+<!-- ggsave("Plots/hull.certain.finer.png", contour.certain, device = "png") -->
 
-```
+<!-- ``` -->
 
 The following chunks visualizes different views on antenna coverage, specific for each layer.
 
@@ -670,56 +669,15 @@ This subchapter refers to the final task in the toyworld generation: the device 
 signal.strength.llh.param <- list(sig_d_th = max(cellplan.combined.reduced$dominance.th),
                                   max_overlapping_cells = 100)
 
-# defining the connection probability
-signal.strength.llh.combined <- create_strength_llh(strength = signal.strength.comb.dt, 
-                                                    param = signal.strength.llh.param) %>% 
-  as_tibble() %>% 
-  mutate(tile.id = rid) %>% 
-  group_by(tile.id) %>%
-  mutate(pij = smart_round(pag, 3)) %>% # round values to the third decimal and assuring that all columns (tiles) add up to 1 (column stocahsticity)
-  ungroup() %>%
-  left_join(area$area.df, by = "tile.id") %>% 
-  mutate(coverage.kind = case_when(pop == 0 ~ "0 population",
-                                   pij == 1 ~ "covered completely by one antenna",
-                                   pij > 0 & pij < 1 ~ "covered by multiple antennas",
-                                   pij == 0 ~ "tile covered unsufficiently")) %>% 
-  dplyr::select(-pag)
+# define connection llh and classify tiles dependning on coverage status
+connection.llh <- create_strength_llh_custom(signal.strength.comb.dt,
+                                             signal.strength.llh.param, 
+                                             smart.rounding.digits = 3, 
+                                             area.df = area$area.df)
 
-# aggregating and specifying the tiles that are uncovered (if there are some)
-tiles.cat <- signal.strength.llh.combined %>% 
-  filter(!pij == 0) %>% 
-  dplyr::select(tile.id, coverage.kind) %>% 
-  group_by(tile.id) %>% 
-  summarise(count = n())
 
-# how many tiles are not sufficiently covered
-missings <- anti_join(area$area.df, tiles.cat, by = "tile.id") # implement non zero pop
-paste("Number of tiles which are unsufficiently covered:", length(missings$tile.id))
-
-# covered only by one tile
-C.vec.fixed.helper <- signal.strength.llh.combined %>% 
-  filter(coverage.kind == "covered completely by one antenna") %>%
-  dplyr::select(tile.id, cell, pop)
-
-# One object where tiles are covered by multiple cells
-C.vec.multiple.helper.new <- signal.strength.llh.combined %>% 
-  filter(coverage.kind == "covered by multiple antennas") %>% 
-  split(.$tile.id) 
-
-# Sampling mobile phones within tiles to cells depending on connection probability
-C.vec.multiple <- C.vec.multiple.helper.new %>% 
-  map(c.vec.sampler) %>% 
-  map(setattr, name = "class", value = "data.table") %>% 
-  rbindlist(.) %>% 
-  .[, .N, by = V1] %>% 
-  as_tibble() %>% 
-  dplyr::select(cell = V1, pop = N)
-
-# pulling all c-vec helper objects together and develop final c-vec dataframe
-C.vec.df <- C.vec.multiple %>% 
-  bind_rows(C.vec.fixed.helper) %>%
-  group_by(cell) %>% 
-  summarise(phones.sum = sum(pop))
+# create c-vector
+C.vec.df <- create_c_vector(connection.llh$signal.strength.llh.combined)
 ```
 
 ```{r c-vec-distribution, fig.cap="Distribution of the toyworld population"}
@@ -770,11 +728,10 @@ In the following code chunk we are specifying the P matrix, with tiles as column
 
 Furthermore, in the following code chunk we implement the process of consolidation a.k.a. the development of super tiles. These are tiles in the P matrix that are indistinguishable from each other based on their relationships to antennas (i.e. columns in the P matrix that are exactly the same). These tiles will yield in all estimators the exact same value, therefore, to reduce computational resources, they can be consolidated to supertiles and afterwards disaggregated again.
 
-
 ```{r}
 # develop long format of P matrix which also contains certain cellplan parameters and "zero elements"
 # develop different versions of id variables (tile and antennas) for easier joining
-P.long.complete.df <- full_join(signal.strength.llh.combined, C.vec.df, by = "cell") %>% 
+P.long.complete.df <- full_join(connection.llh$signal.strength.llh.combined, C.vec.df, by = "cell") %>% 
   # dplyr::select(tile.id, pop, elevation, cell, type, dist, pij, phones.sum) %>% 
   dplyr::select(tile.id, pop, cell, type, dist, pij, phones.sum) %>% 
   mutate(tile.id.chr = tile.id) %>% 
@@ -787,41 +744,27 @@ P.long.complete.df <- full_join(signal.strength.llh.combined, C.vec.df, by = "ce
 # Long format of P matrix with minimal variables and and unique rows
 P.long.df <- P.long.complete.df %>% 
   dplyr::select(tile.id, tile.id.num, tile.id.chr, cell, cell.num, cell.chr, pij) %>% 
-  distinct()
+  distinct() %>% 
+  mutate(supertile.id = create_supertile_index(., elements = c("tile.id.chr", "cell.chr", "pij"))) %>% 
+  mutate(supertile.id = factor(supertile.id)) %>% 
+  mutate(supertile.id.num = as.numeric(supertile.id)) %>% 
+  mutate(supertile.id.chr = as.character(supertile.id))
+
 
 # Sparse matrix version of P matrix
 P.mat <- sparseMatrix(i = P.long.df$cell.num, 
                       j = P.long.df$tile.id.num, 
                       x = P.long.df$pij)
-
-
-# Workflow for consolidating regular tiles to supertiles based on P matrix
-P.star.supertile.helper <- P.long.df %>% 
-  dplyr::select(tile.id.chr, cell.chr, pij) %>% 
-  filter(!pij == 0) %>% # assure that no "non-zero" elements are present
-  group_by(tile.id.chr) %>% 
-  arrange(cell.chr) %>% 
-  mutate(cell.comp = paste0(cell.chr, collapse = ""),
-         pij.comp = paste0(pij, collapse = "")) %>% # develop variables that contain character version of all cell names and all connection probabilities (order matters!!!)
-  ungroup() %>% 
-  group_by(cell.comp, pij.comp) %>% # group by these two variables to find tile that are identical in terms of the P matrix
-  mutate(supertile.id = cur_group_id()) %>% # define the new supertile id
-  ungroup() %>% 
-  mutate(supertile.id = factor(supertile.id)) %>% 
-  mutate(supertile.id.num = as.numeric(supertile.id)) %>% 
-  mutate(supertile.id.chr = as.character(supertile.id)) %>% 
-  right_join(P.long.df, by = c("tile.id.chr", "cell.chr")) %>% 
-  dplyr::select(tile.id, tile.id.num, tile.id.chr, supertile.id, supertile.id.num, supertile.id.chr, 
-                cell, cell.num, cell.chr, pij = pij.x) %>% 
-  filter(!is.na(pij)) 
+ 
+  
 
 # develop joiner object for knowing which regular tiles are within a supertile
-P.star.supertile.joiner <- P.star.supertile.helper %>%  
+P.star.supertile.joiner <- P.long.df %>%  
   distinct(tile.id.num, supertile.id, supertile.id.num, supertile.id.chr) %>% 
   arrange(tile.id.num) 
 
 # define P matrix on the supertile level
-P.star.supertile.long.df <- P.star.supertile.helper %>%
+P.star.supertile.long.df <- P.long.df %>%
   distinct(supertile.id, supertile.id.num, supertile.id.chr, cell, cell.num, cell.chr, pij) %>% 
   arrange(cell.num)
 

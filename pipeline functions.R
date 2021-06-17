@@ -577,9 +577,8 @@ VOR_est <- function(area, cellplan.combined, signal.strength.comb.dt, C.vec.df, 
     ggplot() +
     # geom_sf(aes(fill = phones.sum), color = "blue") +
     geom_sf(color = "blue") +
-    # scale_fill_viridis_c("Phones") +
-    # labs(title = paste("seed =", seed),
-    labs(title = paste("Seed =", seed))
+    theme(text = element_text(size = 13))
+  # scale_fill_viridis_c("Phones") +
   
   # Joining the regions with the tile specific data
   seed.voronoi.tile <- seed.voronoi.est %>% 
@@ -639,7 +638,12 @@ map_density <- function(data, var, label, pointsize = 1.9, pixels = c(900, 900))
     # geom_sf(aes_string(fill = var), color = "transparent") +
     geom_scattermore(aes_string(color = var), pointsize = pointsize, pixels = pixels) +
     # scico::scale_fill_scico(palette = "bilbao", limits = c(0, 3.48), direction = 1) +
-    scale_color_manual(values = colors, drop = F, name = label)
+    scale_color_manual(values = colors, drop = F, name = label) +
+    coord_sf() +
+    theme_minimal() +
+    theme(text = element_text(size = 13)) +
+    labs(x = "", y = "") +
+    guides(colour = guide_legend(override.aes = list(shape = 15, size = 5)))
   # theme(axis.title.x = element_blank(),
   #       axis.text.x = element_blank(),
   #       axis.ticks.x = element_blank(),
@@ -728,6 +732,23 @@ sig_param_plots <- function(param.df, range.max = 20000, base_size = 11) {
     mutate(below.dominance.th = case_when(sig.dom >= dominance.th ~ "Above", 
                                           sig.dom < dominance.th ~ "Below"))
   
+  # special table to find maximum range distance per cell tile at defined sig dom thresholds
+  df.reduced.output <- df %>% 
+    dplyr::select(cell.kind, sig.dom, distance) %>% 
+    mutate(dif.05 = abs(sig.dom - 0.5),
+           dif.005 = abs(sig.dom - 0.05)) %>% 
+    group_by(cell.kind) %>% 
+    filter(dif.05 == min(dif.05) | 
+             dif.005 == min(dif.005)) %>% 
+    ungroup %>% 
+    pivot_longer(cols = starts_with("dif"), names_to = "threshold", values_to = "dom.difference") %>% 
+    group_by(cell.kind, threshold) %>% 
+    filter(dom.difference == min(dom.difference)) %>% 
+    ungroup() %>% 
+    dplyr::select(cell.kind, threshold, max.distance = distance) %>% 
+    pivot_wider(id_cols = cell.kind, names_from = threshold, values_from = max.distance)
+  
+  
   minor.breaks <- rep(1:9, 21) * (10^rep(-10:10, each = 9))
   
   
@@ -799,7 +820,8 @@ sig_param_plots <- function(param.df, range.max = 20000, base_size = 11) {
               strength.dominance.plot = strength.dominance.plot,
               dominance.distance.plot = dominance.distance.plot,
               table.gen = table.gen,
-              table.mod = table.mod))
+              table.mod = table.mod,
+              df.reduced.output = df.reduced.output))
   
 }
 
@@ -939,9 +961,10 @@ density_plots <- function(data) {
                                                 scales::math_format(10^.x)),
                   minor_breaks = minor.breaks) +
     annotation_logticks(sides = "lb") +
-    labs(title = "ECCDF (Insert ECDF capped at 30)", y = "ECCDF", x = "Mobile phones",  
+    labs(y = "ECCDF", x = "Mobile phones",  
          colour = "") + 
-    theme(legend.position = "bottom") 
+    theme(legend.position = "bottom",
+          text = element_text(size = 13))
   
   ECDF.pop.plot <- ECDF.df %>%   
     ggplot() + 
@@ -991,7 +1014,6 @@ scatter_density <- function(point, estimator.name){
                 strip.text.x = element_text(size = 8)))
   
   complete.plot.final <- arrangeGrob(complete.plot[[1]], complete.plot[[2]], complete.plot[[3]], complete.plot[[4]],
-                                     top = textGrob(paste("Joint Density", estimator.name) , gp = gpar(fontsize = 10)),
                                      # padding = 2,
                                      layout_matrix = rbind(c(1, 2, 3, 4)))
   # ggsave("2d_density/d.png", complete.plot.final, device = "png")
@@ -1023,7 +1045,7 @@ scatter_density <- function(point, estimator.name){
   minor.breaks <- rep(1:9, 21) * (10^rep(-10:10, each = 9))
   
   log.both <- base.data.ls %>% 
-    map(~ggplot(., aes(x = pop + 1, y = estimate + 1)) +
+    map(~ggplot(., aes(x = log10(pop + 1), y = log10(estimate + 1))) +
           geom_pointdensity(size = 0.4) +
           scale_color_viridis(guide = F) +
           geom_abline(intercept = 0, slope = 1, linetype = "dotted") +
@@ -1141,4 +1163,97 @@ custom_ecdf_prep <- function(data) {
 c.vec.sampler <- function(x) {
   data.table(sample(x = as.character(x$cell), size = mean(x$pop),
                     replace = T, prob = x$pij))
+}
+
+
+# create the c-vector
+create_c_vector <- function(signal.strength.llh.combined) {
+  
+  # covered only by one tile
+  C.vec.fixed.helper <- signal.strength.llh.combined %>% 
+    filter(coverage.kind == "covered completely by one antenna") %>%
+    dplyr::select(tile.id, cell, pop)
+  
+  # One object where tiles are covered by multiple cells
+  C.vec.multiple.helper.new <- signal.strength.llh.combined %>% 
+    filter(coverage.kind == "covered by multiple antennas") %>% 
+    split(.$tile.id) 
+  
+  # Sampling mobile phones within tiles to cells depending on connection probability
+  C.vec.multiple <- C.vec.multiple.helper.new %>% 
+    map(c.vec.sampler) %>% 
+    map(setattr, name = "class", value = "data.table") %>% 
+    rbindlist(.) %>% 
+    .[, .N, by = V1] %>% 
+    as_tibble() %>% 
+    dplyr::select(cell = V1, pop = N)
+  
+  # pulling all c-vec helper objects together and develop final c-vec dataframe
+  C.vec.df <- C.vec.multiple %>% 
+    bind_rows(C.vec.fixed.helper) %>%
+    group_by(cell) %>% 
+    summarise(phones.sum = sum(pop))
+  
+  return(C.vec.df)
+  
+}
+
+
+
+## connection likelihood
+
+create_strength_llh_custom <- function(signal.strength.comb.dt,
+                                       signal.strength.llh.param, 
+                                       smart.rounding.digits = 3,
+                                       area.df) {
+  
+  # defining the connection probability
+  signal.strength.llh.combined <- create_strength_llh(strength = signal.strength.comb.dt, 
+                                                      param = signal.strength.llh.param) %>% 
+    as_tibble() %>% 
+    mutate(tile.id = rid) %>% 
+    group_by(tile.id) %>%
+    mutate(pij = smart_round(pag, 3)) %>% # round values to the third decimal and assuring that all columns (tiles) add up to 1 (column stocahsticity)
+    ungroup() %>%
+    left_join(area.df, by = "tile.id") %>% 
+    mutate(coverage.kind = case_when(pop == 0 ~ "0 population",
+                                     pij == 1 ~ "covered completely by one antenna",
+                                     pij > 0 & pij < 1 ~ "covered by multiple antennas",
+                                     pij == 0 ~ "tile covered unsufficiently")) %>% 
+    dplyr::select(-pag)
+  
+  # aggregating and specifying the tiles that are uncovered (if there are some)
+  tiles.cat <- signal.strength.llh.combined %>% 
+    filter(!pij == 0) %>% 
+    dplyr::select(tile.id, coverage.kind) %>% 
+    group_by(tile.id) %>% 
+    summarise(count = n())
+  
+  # how many tiles are not sufficiently covered
+  missings <- anti_join(area$area.df, tiles.cat, by = "tile.id") # implement non zero pop
+  cat(paste("Number of tiles which are unsufficiently covered:", length(missings$tile.id)))
+  
+  return(list(signal.strength.llh.combined = signal.strength.llh.combined,
+              tiles.cat = tiles.cat))
+}
+
+
+create_supertile_index <- function(P.long.df, elements = c("tile.id.chr", "cell.chr", "pij")){
+  
+  P.dt <- as.data.table(P.long.df) %>% 
+    .[, order.var := factor(.I)]
+  
+  dat <- P.dt %>% 
+    .[, ..elements] %>% 
+    .[!pij == 0] %>%
+    setorder(., cell.chr) %>%
+    .[, cell.comp := paste0(cell.chr, collapse = ""), by = tile.id.chr] %>%
+    .[, pij.comp := paste0(pij, collapse = ""), by = tile.id.chr] %>%
+    .[, supertile.id := .GRP, by = .(cell.comp, pij.comp)]
+  
+  final <- P.dt[dat, on = c("tile.id.chr", "cell.chr")] %>%
+    setorder(., order.var) %>% 
+    .[, supertile.id]
+  
+  return(final)
 }
