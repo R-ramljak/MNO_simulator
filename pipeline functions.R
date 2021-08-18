@@ -276,7 +276,7 @@ EM_est <- function(c.vec.dt, P.dt, a.vec.dt, n.iter, selected.range, ldt = 10^-0
     
     if(m %in% selected.range) {
       keep <- tiles[keep, on = "j"]
-      keep <- eval(parse(text = paste0("keep[, u", m, ":= u]")))
+      keep <- eval(parse(text = paste0("keep[, u_", m, ":= u]")))
       keep[, "u" := NULL]
     }
     
@@ -1172,12 +1172,12 @@ create_c_vector <- function(signal.strength.llh.combined) {
   # covered only by one tile
   C.vec.fixed.helper <- signal.strength.llh.combined %>% 
     filter(coverage.kind == "covered completely by one antenna") %>%
-    dplyr::select(tile.id, cell, pop)
+    dplyr::select(tile.id.num, cell, pop)
   
   # One object where tiles are covered by multiple cells
   C.vec.multiple.helper.new <- signal.strength.llh.combined %>% 
     filter(coverage.kind == "covered by multiple antennas") %>% 
-    split(.$tile.id) 
+    split(.$tile.id.num) 
   
   # Sampling mobile phones within tiles to cells depending on connection probability
   C.vec.multiple <- C.vec.multiple.helper.new %>% 
@@ -1202,6 +1202,7 @@ create_c_vector <- function(signal.strength.llh.combined) {
 
 ## connection likelihood
 
+
 create_strength_llh_custom <- function(signal.strength.comb.dt,
                                        signal.strength.llh.param, 
                                        smart.rounding.digits = 3,
@@ -1211,11 +1212,11 @@ create_strength_llh_custom <- function(signal.strength.comb.dt,
   signal.strength.llh.combined <- create_strength_llh(strength = signal.strength.comb.dt, 
                                                       param = signal.strength.llh.param) %>% 
     as_tibble() %>% 
-    mutate(tile.id = rid) %>% 
-    group_by(tile.id) %>%
-    mutate(pij = smart_round(pag, 3)) %>% # round values to the third decimal and assuring that all columns (tiles) add up to 1 (column stocahsticity)
+    mutate(tile.id.chr = as.character(rid)) %>% 
+    group_by(tile.id.chr) %>%
+    mutate(pij = smart_round(pag, smart.rounding.digits)) %>% # round values to the third decimal and assuring that all columns (tiles) add up to 1 (column stocahsticity)
     ungroup() %>%
-    left_join(area.df, by = "tile.id") %>% 
+    left_join(area.df, by = "tile.id.chr") %>% 
     mutate(coverage.kind = case_when(pop == 0 ~ "0 population",
                                      pij == 1 ~ "covered completely by one antenna",
                                      pij > 0 & pij < 1 ~ "covered by multiple antennas",
@@ -1225,13 +1226,13 @@ create_strength_llh_custom <- function(signal.strength.comb.dt,
   # aggregating and specifying the tiles that are uncovered (if there are some)
   tiles.cat <- signal.strength.llh.combined %>% 
     filter(!pij == 0) %>% 
-    dplyr::select(tile.id, coverage.kind) %>% 
-    group_by(tile.id) %>% 
+    dplyr::select(tile.id.num, coverage.kind) %>% 
+    group_by(tile.id.num) %>% 
     summarise(count = n())
   
   # how many tiles are not sufficiently covered
-  missings <- anti_join(area$area.df, tiles.cat, by = "tile.id") # implement non zero pop
-  cat(paste("Number of tiles which are unsufficiently covered:", length(missings$tile.id)))
+  missings <- anti_join(area$area.df, tiles.cat, by = "tile.id.num") # implement non zero pop
+  cat(paste("Number of tiles which are unsufficiently covered:", length(missings$tile.id.num)))
   
   return(list(signal.strength.llh.combined = signal.strength.llh.combined,
               tiles.cat = tiles.cat))
@@ -1256,4 +1257,31 @@ create_supertile_index <- function(P.long.df, elements = c("tile.id.chr", "cell.
     .[, supertile.id]
   
   return(final)
+}
+
+
+quantize_mag <- function(x, n) {
+  
+  # Bit depth
+  n <- n
+  
+  # number of quantized levels
+  L <- 2^n
+  
+  # helpers
+  x.max <- max(x)
+  x.min <- min(x)
+  
+  # Step-size
+  delta <- (x.max - x.min) / L
+  
+  # calculate index
+  I <- round( ((x - x.min) / delta), digits = 0)
+  
+  # Quantized magnitue
+  x.quant <- x.min + I * delta
+  
+  return(x.quant)
+  
+  
 }
