@@ -414,6 +414,17 @@ paste0("Number of tiles which do not reach the signal dominance threshold of: " 
 ```
 
 
+
+```{r}
+cellplans.list <- list(cellplan.1.layer.1 = cellplan.1.layer.1,
+                       cellplan.1.layer.2 = cellplan.1.layer.2,
+                       cellplan.3.layer = cellplan.3.layer,
+                       cellplan.2.layer = cellplan.2.layer)
+
+saveRDS(cellplans.list, "workflow_objects/cellplans.list.rds")
+```
+
+
 ```{r dev-to-cell}
 # specify the option of differing parameters for sig_d_th and max_overlapping_cells depending on the cell type in custom create_strength_llh function
 
@@ -422,28 +433,35 @@ signal.strength.llh.param <- list(sig_d_th = 0.05,
                                   max_overlapping_cells = 100)
 
 # define connection llh and classify tiles depending on coverage status
-connection.llh <- map(signal.strength.comb.dt, ~create_strength_llh_custom(.x,
-                                                                           signal.strength.llh.param, 
-                                                                           smart.rounding.digits = 3, 
-                                                                           area.df = area$area.df))
+connection.llh.list <- map(cellplans.list, ~create_strength_llh_custom(.x$signal.strength.comb.dt,
+                                                                       signal.strength.llh.param, 
+                                                                       smart.rounding.digits = 3, 
+                                                                       area.df = area$area.df))
                       
 
 # create c-vector
-C.vec.df <- map(connection.llh, ~create_c_vector(.x$signal.strength.llh.combined))
+C.vec.df.list <- map(connection.llh.list, ~create_c_vector(.x$signal.strength.llh.combined))
 
 # develop long format of P matrix which also contains certain cellplan parameters and "zero elements"
 # develop different versions of id variables (tile and antennas) for easier joining
-P.long.complete.df <- map2(connection.llh, C.vec.df, ~full_join(.x$signal.strength.llh.combined, .y, by = "cell")) %>% 
+P.long.complete.df <- map2(connection.llh.list, C.vec.df.list, ~full_join(.x$signal.strength.llh.combined, .y, by = "cell")) %>% 
   # dplyr::select(tile.id, pop, elevation, cell, type, dist, pij, phones.sum) %>% 
   map(~dplyr::select(., tile.id.chr,, tile.id.fac, tile.id.num, pop, cell, type, dist, pij, phones.sum)) %>% 
   map(~mutate(., cell.chr = as.character(cell))) %>% 
-  map2(cellplan.combined, ~mutate(.x, cell.fac = factor(cell.chr, levels = fct_unique(.y$cell.fac)))) %>% 
+  map2(cellplans.list, ~mutate(.x, cell.fac = factor(cell.chr, levels = fct_unique(.y$cellplan.combined$cell.fac)))) %>% 
   map(~mutate(., cell.num = as.numeric(cell.fac)))
 
 # Long format of P matrix with minimal variables and and unique rows
 P.long.df <- P.long.complete.df %>% 
   map(~dplyr::select(., tile.id.chr, tile.id.fac, tile.id.num, cell.chr, cell.fac, cell.num, pij)) %>% 
   map(~distinct(.))
+
+
+gen.model.objects <- list(C.vec.df.list = C.vec.df.list,
+                          P.long.complete.df = P.long.complete.df,
+                          P.long.df = P.long.df)
+
+saveRDS(gen.model.objects, "workflow_objects/gen.model.objects.rds")
 
 ```
 
