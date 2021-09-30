@@ -272,18 +272,24 @@ complete_cellplan_gen <- function(area, layer.params.ext, param.df) {
                                                     elevation = area$area.elevation))
   
   # create signal strength object of all cells
-  signal.strength.comb.dt <- rbindlist(signal.strength.list)
+  signal.strength.comb.dt <- rbindlist(signal.strength.list) %>% 
+    mutate(tile.id.chr = as.character(rid)) %>% 
+    mutate(tile.id.fac = factor(tile.id.chr, levels = fct_unique(area$area.sf$tile.id.fac))) %>% 
+    mutate(tile.id.num = as.numeric(tile.id.fac)) %>% 
+    mutate(cell.chr = as.character(cell)) %>% 
+    mutate(cell.fac = factor(cell.chr, levels = fct_unique(cellplan.combined.df$cell.fac))) %>% 
+    mutate(cell.num = as.numeric(cell.fac)) %>% 
+    left_join(area$area.reduced.df, by = "tile.id.chr") %>% 
+    as.data.table(.)
   
   signal.strength.summary.helper <- signal.strength.comb.dt %>%
     as_tibble() %>%
-    mutate(tile.id = as.character(rid)) %>%
     mutate(cell.kind = substr(cell, 1, 2)) %>%
-    mutate(cell.chr = as.character(cell)) %>%
     left_join(cellplan.combined.reduced.df, by = c("cell.chr" = "cell")) %>% 
     filter(!s < dominance.th) # filter rows out that are below the set dominance threshold
   
   signal.strength.summary <- signal.strength.summary.helper %>% 
-    group_by(tile.id) %>%
+    group_by(tile.id.chr) %>%
     mutate(max.dBm = max(dBm),
            max.s = max(s),
            min.dist = min(dist)) %>%
@@ -291,17 +297,16 @@ complete_cellplan_gen <- function(area, layer.params.ext, param.df) {
   
   # identify the cell-tile relations with maximum signal dominance and identify tiles that are not covered sufficiently
   signal.dom <- signal.strength.summary %>% 
-    distinct(tile.id, max.s) %>%
-    left_join(signal.strength.summary, by = c("tile.id", "max.s" = "s")) %>% 
-    dplyr::select(tile.id, max.s, cell, cell.kind) %>% 
-    mutate(tile.id = as.integer(tile.id)) %>% 
-    full_join(area$area.sf, by = "tile.id") %>% 
+    distinct(tile.id.chr, max.s) %>%
+    left_join(signal.strength.summary, by = c("tile.id.chr", "max.s" = "s")) %>% 
+    dplyr::select(tile.id.chr, max.s, cell, cell.kind) %>% 
+    full_join(area$area.sf, by = "tile.id.chr") %>% 
     mutate(missing = case_when(is.na(max.s) ~ 1,
                                TRUE ~ 0))
   
   
   
-  return(list(param.df <- param.df,
+  return(list(param.df = param.df,
     cellplan.combined.df = cellplan.combined.df,
               cellplan.combined.reduced.df = cellplan.combined.reduced.df,
               signal.strength.comb.dt = signal.strength.comb.dt,
@@ -1341,7 +1346,10 @@ create_strength_llh_custom <- function(signal.strength.comb.dt,
 }
 
 
-create_supertile_index <- function(P.long.df, elements = c("tile.id.chr", "cell.chr", "pij")){
+create_supertile_index <- function(P.long.df, elements = c("tile.id.chr", "cell.chr", "pij", "a")){
+  
+  
+  # P.long.df <- P.long.noise.df$cellplan.1.layer.1.no_03
   
   P.dt <- as.data.table(P.long.df) %>% 
     .[, order.var := factor(.I)]
@@ -1352,7 +1360,7 @@ create_supertile_index <- function(P.long.df, elements = c("tile.id.chr", "cell.
     setorder(., cell.chr) %>%
     .[, cell.comp := paste0(cell.chr, collapse = ""), by = tile.id.chr] %>%
     .[, pij.comp := paste0(pij, collapse = ""), by = tile.id.chr] %>%
-    .[, supertile.id := .GRP, by = .(cell.comp, pij.comp)]
+    .[, supertile.id := .GRP, by = .(cell.comp, pij.comp, a)]
   
   final <- P.dt[dat, on = c("tile.id.chr", "cell.chr")] %>%
     setorder(., order.var) %>% 
