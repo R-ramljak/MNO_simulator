@@ -231,6 +231,83 @@ create_cellplan <- function(area.sf, area.bbox, area.elevation, cells.unparam, c
 }
 
 
+## combine all cell creation functions
+
+complete_cellplan_gen <- function(area, layer.params.ext, param.df) {
+  
+  param.df.reduced <- param.df %>% 
+    dplyr::select(cell.kind, dominance.th)
+  
+  cells.unparam.list <- map(layer.params.ext, ~create_cells(area.sf = area$area.sf,
+                                                            tower.dist = .x$tower.dist,
+                                                            rotation.deg = .x$rotation.deg,
+                                                            jitter = .x$jitter,
+                                                            small = FALSE,
+                                                            subscript = .x$subscript,
+                                                            seed = .x$seed))
+  
+  cellplan.val.list <- map2(cells.unparam.list, layer.params.ext,
+                            ~create_cellplan(area.sf = area$area.sf,
+                                             area.bbox = area$area.bbox, 
+                                             area.elevation = area$area.elevation,
+                                             cells.unparam = .x,
+                                             cell.param.mobloc = .y$mobloc.params))
+  
+  cellplan.combined.df <- map_dfr(cellplan.val.list, 
+                                  ~bind_rows(as_tibble(.x$cellplan.val)),
+                                  .id = "cell.kind") %>% 
+    left_join(param.df.reduced, by = "cell.kind")
+  
+  cellplan.combined.reduced.df <- cellplan.combined.df %>% 
+    dplyr::select(cell, dominance.th)
+  
+  # compute signal strength and device to cell association
+  signal.strength.list <- map(cellplan.val.list, 
+                              ~compute_sig_strength(cp = .x$cellplan.val,
+                                                    raster = area$area.raster,
+                                                    param = .x$cell.param.mobloc,
+                                                    elevation = area$area.elevation))
+  
+  # create signal strength object of all cells
+  signal.strength.comb.dt <- rbindlist(signal.strength.list)
+  
+  signal.strength.summary.helper <- signal.strength.comb.dt %>%
+    as_tibble() %>%
+    mutate(tile.id = as.character(rid)) %>%
+    mutate(cell.kind = substr(cell, 1, 2)) %>%
+    mutate(cell.chr = as.character(cell)) %>%
+    left_join(cellplan.combined.reduced.df, by = c("cell.chr" = "cell")) %>% 
+    filter(!s < dominance.th) # filter rows out that are below the set dominance threshold
+  
+  signal.strength.summary <- signal.strength.summary.helper %>% 
+    group_by(tile.id) %>%
+    mutate(max.dBm = max(dBm),
+           max.s = max(s),
+           min.dist = min(dist)) %>%
+    ungroup()
+  
+  # identify the cell-tile relations with maximum signal dominance and identify tiles that are not covered sufficiently
+  signal.dom <- signal.strength.summary %>% 
+    distinct(tile.id, max.s) %>%
+    left_join(signal.strength.summary, by = c("tile.id", "max.s" = "s")) %>% 
+    dplyr::select(tile.id, max.s, cell, cell.kind) %>% 
+    mutate(tile.id = as.integer(tile.id)) %>% 
+    full_join(area$area.sf, by = "tile.id") %>% 
+    mutate(missing = case_when(is.na(max.s) ~ 1,
+                               TRUE ~ 0))
+  
+  
+  
+  return(list(cellplan.combined.df = cellplan.combined.df,
+              cellplan.combined.reduced.df = cellplan.combined.reduced.df,
+              signal.strength.comb.dt = signal.strength.comb.dt,
+              signal.strength.summary.helper = signal.strength.summary.helper,
+              signal.strength.summary = signal.strength.summary,
+              signal.dom = signal.dom))
+  
+}
+
+
 smart_round <- function(x, digits = 0) {
   up <- 10 ^ digits
   x <- x * up
@@ -244,7 +321,7 @@ smart_round <- function(x, digits = 0) {
 # implement selected iterations option with input vector
 
 # New MLE iteration function by Matyas
-EM_est <- function(c.vec.dt, P.dt, a.vec.dt, n.iter, selected.range, ldt = 10^-04, message = T) {
+EM_est <- function(c.vec.dt, P.dt, a.vec.dt, n.iter, selected.range, ldt.dt, message = T) {
   
   cdt <- c.vec.dt
   pij <- cdt[P.dt, on = "i"]
@@ -271,7 +348,7 @@ EM_est <- function(c.vec.dt, P.dt, a.vec.dt, n.iter, selected.range, ldt = 10^-0
     pij[, c("u", "sum_pik_uk") := NULL]
     tiles <- faktor.adj[tiles, on = "j"]
     # tiles <- eval(parse(text = paste0("tiles[, u := u * f]")))
-    tiles <- eval(parse(text = paste0("tiles[,  u := fifelse(u * f < ldt, 0, u * f)]")))
+    tiles <- eval(parse(text = paste0("tiles[,  u := fifelse(u * f < ldt.dt, 0, u * f)]")))
     tiles[, "f" := NULL]
     
     if(m %in% selected.range) {
@@ -325,7 +402,7 @@ EM_est <- function(c.vec.dt, P.dt, a.vec.dt, n.iter, selected.range, ldt = 10^-0
 
 
 
-DF_est <- function(c.vec.dt, P.star.spm, a.supertile.vec){
+DF_est_relaxed <- function(c.vec.dt, P.star.spm, a.supertile.vec){
   
   c.vec <- c(c.vec.dt)$c
   A.spm <- .sparseDiagonal(n = length(a.supertile.vec), x = a.supertile.vec)
@@ -333,6 +410,18 @@ DF_est <- function(c.vec.dt, P.star.spm, a.supertile.vec){
   Y <- P.star.spm %*% A.spm %*% t(P.star.spm) 
   Y1 <- VCA::MPinv(Y) %*% (c.vec - P.star.spm %*% a.supertile.vec)
   u <- as.vector(A.spm %*% t(P.star.spm) %*% Y1 + a.supertile.vec)
+  
+  return(u)
+}
+
+
+DF_est_num <- function(c.vec.dt, P.star.spm, a.supertile.vec){
+  
+  settings <- osqpSettings(alpha = 1.0, eps_abs = 1e-12, eps_rel = 1e-12, 
+                           max_iter = 100000, linsys_solver = 0, warm_start = 1)
+  
+  model <- osqp(P = Q, q = a, A = P.mat.1, l = l, u = u, settings)
+  res <- model$Solve()
   
   return(u)
 }
@@ -641,7 +730,16 @@ map_density <- function(data, var, label, pointsize = 1.9, pixels = c(900, 900))
     scale_color_manual(values = colors, drop = F, name = label) +
     coord_sf() +
     theme_minimal() +
-    theme(text = element_text(size = 13)) +
+    theme(
+          legend.position = "none",
+          axis.text.x = element_blank(),
+          axis.text.y = element_blank(),
+          axis.ticks.x = element_blank(),
+          axis.ticks.y = element_blank(),
+          text = element_text(size = 20),
+          plot.background=element_rect(fill="transparent", colour=NA),
+          rect = element_rect(fill = "transparent"),
+          plot.margin=grid::unit(c(0,0,0,0), "mm")) +
     labs(x = "", y = "") +
     guides(colour = guide_legend(override.aes = list(shape = 15, size = 5)))
   # theme(axis.title.x = element_blank(),
@@ -1276,12 +1374,29 @@ quantize_mag <- function(x, n) {
   delta <- (x.max - x.min) / L
   
   # calculate index
-  I <- round( ((x - x.min) / delta), digits = 0)
+  I <- ceiling( ((x - x.min) / delta))
   
   # Quantized magnitue
   x.quant <- x.min + I * delta
   
   return(x.quant)
   
+  
+}
+
+con_llh_sens_custom <- function(strength, L.kind, digits) {
+  
+  e <- strength %>% 
+    dplyr::select(tile.id.num, cell, s = .data[[L.kind]], sig_d_th) %>% 
+    mutate(max_overlapping_cells = 100) %>% 
+    as.data.table() %>% 
+    .[, pag := s / sum(s), by = tile.id.num] %>% 
+    .[, pag.rounded := smart_round(pag, digits), by = tile.id.num] # round values to the third decimal and assuring that all columns (tiles) add up to 1 (column stocahsticity)
+  # .[, by = rid, .(os = order(s), s, max_overlapping_cells)] %>% 
+  # .[os <= max_overlapping_cells, `:=`(pag, s/sum(s)), by = rid]
+  
+  final <- e$pag.rounded
+  
+  return(final)
   
 }
