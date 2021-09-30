@@ -256,6 +256,9 @@ complete_cellplan_gen <- function(area, layer.params.ext, param.df) {
   cellplan.combined.df <- map_dfr(cellplan.val.list, 
                                   ~bind_rows(as_tibble(.x$cellplan.val)),
                                   .id = "cell.kind") %>% 
+    mutate(cell.chr = as.character(cell)) %>% 
+    mutate(cell.fac = factor(cell.chr)) %>% 
+    mutate(cell.num = as.numeric(cell.fac)) %>% 
     left_join(param.df.reduced, by = "cell.kind")
   
   cellplan.combined.reduced.df <- cellplan.combined.df %>% 
