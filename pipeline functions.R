@@ -301,7 +301,8 @@ complete_cellplan_gen <- function(area, layer.params.ext, param.df) {
   
   
   
-  return(list(cellplan.combined.df = cellplan.combined.df,
+  return(list(param.df <- param.df,
+    cellplan.combined.df = cellplan.combined.df,
               cellplan.combined.reduced.df = cellplan.combined.reduced.df,
               signal.strength.comb.dt = signal.strength.comb.dt,
               signal.strength.summary.helper = signal.strength.summary.helper,
