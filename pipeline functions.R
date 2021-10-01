@@ -497,13 +497,229 @@ DF_est_iterated <- function(c.vec.dt, P.star.spm, a.supertile.vec, P.dt, DF.thre
 # paramter: sim.area, cellplan.combined, signal.strength.comb.dt, c.vec.df, method, offset
 
 
-# Voronoi
-# aggregating the antennas to towers (and corresponding values) and identifying problematic tower locations (outside of focus area)
+# # Voronoi
+# # aggregating the antennas to towers (and corresponding values) and identifying problematic tower locations (outside of focus area)
+# 
+# ### 1 ####
+# 
+# 
+# VOR_est <- function(area, cellplan.combined, signal.strength.comb.dt, C.vec.df, seed = c("tower", "cell.offset", "cell.hotpoint"), offset = 20) {
+#   
+#   ### helper 
+#   
+#   base.tile.size <- area$area.params$base.tile.size
+#   crs.set <- st_crs(area$area.sf)
+#   cellplan.reduced <- cellplan.combined %>% 
+#     dplyr::select(cell, direction)
+#   
+#   if (seed == "tower") {
+#     
+#     ### tower ###
+#     seed.object.unadj <- C.vec.df %>% 
+#       left_join(cellplan.combined, by = "cell") %>% 
+#       mutate(tower = str_extract(cell, "[A-Z]+.[:digit:]+")) %>% 
+#       group_by(tower) %>% 
+#       mutate(phones.sum = sum(phones.sum)) %>% 
+#       distinct(tower, .keep_all = T) %>% 
+#       ungroup() %>% 
+#       dplyr::select(seed = tower, X.tow = x, Y.tow = y, phones.sum) %>%
+#       st_as_sf(coords = c("X.tow", "Y.tow")) %>% 
+#       st_sf(crs = crs.set) %>%  # optional
+#       mutate(within.fa = lengths(st_within(., area$area.union))) # find seeds outside the focus area
+#     
+#   } else if (seed == "cell.offset") {
+#     
+#     #### offset ####
+#     cellplan.offset <- move_cells_into_prop_direction(st_as_sf(cellplan.combined), offset = offset)
+#     
+#     seed.object.unadj <- C.vec.df %>% 
+#       left_join(cellplan.offset, by = "cell") %>% 
+#       dplyr::select(seed = cell, phones.sum, geometry) %>%
+#       st_sf() %>% 
+#       st_sf(crs = crs.set) %>%
+#       mutate(within.fa = lengths(st_within(., area$area.union))) # find seeds outside the focus area
+#     
+#   } else if (seed == "cell.hotpoint") {
+#     
+#     ### Hotpoint ###
+#     cell.max.location <- signal.strength.comb.dt %>% 
+#       as_tibble() %>% 
+#       rename(tile.id = rid) %>% 
+#       group_by(cell) %>% 
+#       mutate(max.cell.s = max(dBm)) %>% # find the max SIGNAL STRENGTH per cell
+#       filter(dBm == max.cell.s) %>%  # filter the rows where corresponds to the cell specific max.s to retain the tile.id
+#       ungroup() %>% 
+#       group_by(tile.id) %>% 
+#       mutate(count.same.centroids = n()) %>% # tiles that act as hotpoint for multiple cells
+#       ungroup() %>% 
+#       mutate(same.centroids = case_when(count.same.centroids > 1 ~ 1, # mark identical hotpoints for further adjustment into respective direction
+#                                         TRUE ~ 0)) %>% 
+#       left_join(area$area.sf, by = "tile.id") %>% 
+#       left_join(cellplan.reduced, by = "cell") %>% # join to receive direction info
+#       dplyr::select(cell, same.centroids, direction, geometry) %>% 
+#       st_sf(crs = crs.set) %>% 
+#       st_centroid() %>% 
+#       mutate(X = unlist(map(.$geometry, 1)),
+#              Y = unlist(map(.$geometry, 2))) %>% 
+#       mutate(X.adj = case_when(same.centroids == "1" ~ X + SIN(direction) * 10, # move point in cell defined direction with offset of 10m if identical hotpoints
+#                                TRUE ~ X),
+#              Y.adj = case_when(same.centroids == "1" ~ Y + COS(direction) * 10,
+#                                TRUE ~ Y)) %>% 
+#       st_drop_geometry() %>% 
+#       st_as_sf(coords = c("X.adj", "Y.adj"), crs = crs.set) %>% 
+#       dplyr::select(-X, -Y) # add again for consistency check plot if the adjutsment was right
+#     
+#     # cell.max.location %>% 
+#     #   ggplot() +
+#     #   geom_sf() +
+#     #   geom_point(aes(x = X, y = Y, color = factor(same.centroids)))
+#     
+#     
+#     seed.object.unadj <- C.vec.df %>% 
+#       left_join(cell.max.location, by = "cell") %>% 
+#       dplyr::select(seed = cell, phones.sum, geometry) %>%
+#       mutate(seed = as.character(seed)) %>% 
+#       st_sf(crs = crs.set) %>% 
+#       mutate(within.fa = lengths(st_within(., area$area.union))) # find seeds outside the focus area
+#     
+#   } else if (seed == "cell.barycenter") {
+#     
+#     ### barycenter ###
+#     
+#     # calculate the centroid of all tiles and save as point coordinates
+#     tile.centroid <- area$area.sf %>% 
+#       st_centroid() %>% 
+#       mutate(centroid.X = unlist(map(.$geometry, 1)),
+#              centroid.Y = unlist(map(.$geometry, 2))) %>% 
+#       dplyr::select(tile.id, centroid.X, centroid.Y) %>% 
+#       st_drop_geometry()
+#     
+#     # join signal strength with tile centroid. calculate weighted 2d mean of x and y coordinate with mean(sig.dom.) as weights
+#     cell.max.location <- signal.strength.comb.dt %>% 
+#       as_tibble() %>% 
+#       rename(tile.id = rid) %>% 
+#       left_join(tile.centroid, by = "tile.id") %>% 
+#       group_by(cell) %>% 
+#       summarise(X.barycenter = weighted.mean(centroid.X, s),
+#                 Y.barycenter = weighted.mean(centroid.Y, s)) %>% # calculate for each cell the barycenter location
+#       ungroup() %>% 
+#       st_as_sf(coords = c("X.barycenter", "Y.barycenter"), crs = crs.set)
+#     
+#     
+#     seed.object.unadj <- C.vec.df %>% 
+#       left_join(cell.max.location, by = "cell") %>% 
+#       dplyr::select(seed = cell, phones.sum, geometry) %>%
+#       mutate(seed = as.character(seed)) %>% 
+#       st_sf(crs = crs.set) %>% 
+#       mutate(within.fa = lengths(st_within(., area$area.union))) # find seeds outside the focus area
+#     
+#   }
+#   
+#   
+#   # saving seed IDs of problematic seeds (2)
+#   
+#   ### 2 ####
+#   
+#   seed.outside <- seed.object.unadj %>% 
+#     filter(within.fa == 0) %>%
+#     st_drop_geometry() %>% 
+#     dplyr::select(seed) %>% 
+#     deframe()
+#   
+#   # filtering unproblematic seeds
+#   seed.inside <- seed.object.unadj %>% 
+#     filter(within.fa == 1)
+#   
+#   if (length(seed.outside) >= 1) {
+#     
+#     seed.object.adj <- seed.object.unadj %>% 
+#       filter(within.fa == 0) %>%
+#       st_nearest_points(., area$area.union) %>%
+#       st_cast("POINT") %>%
+#       .[seq(2, length(.), 2)] %>% #
+#       st_as_sf() %>%
+#       mutate(seed = names(seed.outside)) %>%
+#       mutate(geometry = x) %>%
+#       st_sf(sf_column_name = "geometry") %>%
+#       dplyr::select(-x) %>%
+#       bind_rows(seed.inside)
+#     
+#   } else {
+#     
+#     seed.object.adj <- seed.object.unadj
+#   }
+#   
+#   
+#   # Finding respective nearest point on focus area border for every problematic seed location
+#   
+#   
+#   sum(unlist(st_intersects(seed.object.adj, area$area.union))) ==
+#     length(seed.object.unadj$seed) # check if all are within now
+#   
+#   # Using the seed object to calculate the Voronoi regions and their spatial densities per Voronoi region
+#   
+#   ### 3 ####
+#   seed.voronoi.est <- seed.object.adj %>%  
+#     st_geometry() %>% 
+#     st_union() %>% 
+#     st_voronoi() %>% 
+#     st_collection_extract(type = "POLYGON") %>%
+#     st_sf() %>% # check if crs is listed
+#     st_join(seed.object.unadj) %>%  # rejoin with seed object to retain seed id
+#     st_intersection(area$area.union) %>% 
+#     mutate(vor.area = row_number()) %>% 
+#     mutate(vor.area.size = as.numeric(st_area(.$geometry))) %>% 
+#     mutate(vor.est = phones.sum / vor.area.size)
+#   
+#   Voronoi.regions.plot <- seed.voronoi.est %>%
+#     ggplot() +
+#     # geom_sf(aes(fill = phones.sum), color = "blue") +
+#     geom_sf(color = "blue") +
+#     theme(text = element_text(size = 13))
+#   # scale_fill_viridis_c("Phones") +
+#   
+#   # Joining the regions with the tile specific data
+#   seed.voronoi.tile <- seed.voronoi.est %>% 
+#     st_join(area$area.sf) %>% # & re-connect the data items
+#     st_set_agr("aggregate") %>% # clean up
+#     group_by(tile.id) %>% 
+#     mutate(count = n()) %>% 
+#     ungroup()
+#   
+#   # identifiying tiles intersecting with multiple Voronoi regions
+#   seed.multiple <- seed.voronoi.tile %>%
+#     st_drop_geometry() %>% 
+#     filter(count > 1) %>% 
+#     distinct(tile.id) %>% 
+#     deframe()
+#   
+#   # calculate area within competing voronoi regions of "multiple" tiles
+#   seed.intersect.tiles <- area$area.sf %>% 
+#     filter(tile.id %in% seed.multiple) %>%
+#     st_intersection(seed.voronoi.est) %>% 
+#     # st_collection_extract(type = "POLYGON") %>% # select the polygons
+#     mutate(amount.tiles = as.numeric(st_area(.$geometry)) / base.tile.size^2) # checked if it adds up to 1
+#   
+#   # final datatset to calculate spatial density
+#   seed.voronoi.final <- seed.intersect.tiles %>% 
+#     st_drop_geometry() %>% 
+#     dplyr::select(tile.id, seed, amount.tiles) %>% 
+#     right_join(seed.voronoi.tile, by = c("tile.id", "seed")) %>% 
+#     mutate(amount.tiles = case_when(is.na(amount.tiles) ~ 1,
+#                                     TRUE ~ amount.tiles)) %>% 
+#     group_by(tile.id) %>% 
+#     summarise(u.VOR = weighted.mean(x = vor.est, w = amount.tiles) * base.tile.size^2)
+#   # should result in same length as the raw tiles object and the sum of the voronoi est corrected should resemble the sum of the c.vec
+#   
+#   
+#   return(list(seed.voronoi.final = seed.voronoi.final,
+#               Voronoi.regions.plot = Voronoi.regions.plot))
+#   
+# }
 
-### 1 ####
 
-
-VOR_est <- function(area, cellplan.combined, signal.strength.comb.dt, C.vec.df, seed = c("tower", "cell.offset", "cell.hotpoint"), offset = 20) {
+### new
+VOR_est <- function(area, cellplan.combined, signal.strength.comb.dt, C.vec.df, prior.var, seed = c("tower", "cell.offset", "cell.hotpoint"), offset = 20) {
   
   ### helper 
   
@@ -659,6 +875,11 @@ VOR_est <- function(area, cellplan.combined, signal.strength.comb.dt, C.vec.df, 
   # Using the seed object to calculate the Voronoi regions and their spatial densities per Voronoi region
   
   ### 3 ####
+  
+  prior.multi.sf <- area$area.sf.raw %>% 
+    group_by(!!as.name(prior.var)) %>% 
+    summarise()
+  
   seed.voronoi.est <- seed.object.adj %>%  
     st_geometry() %>% 
     st_union() %>% 
@@ -666,14 +887,20 @@ VOR_est <- function(area, cellplan.combined, signal.strength.comb.dt, C.vec.df, 
     st_collection_extract(type = "POLYGON") %>%
     st_sf() %>% # check if crs is listed
     st_join(seed.object.unadj) %>%  # rejoin with seed object to retain seed id
-    st_intersection(area$area.union) %>% 
-    mutate(vor.area = row_number()) %>% 
-    mutate(vor.area.size = as.numeric(st_area(.$geometry))) %>% 
-    mutate(vor.est = phones.sum / vor.area.size)
+    st_intersection(prior.multi.sf) %>%
+    mutate(subpolygon.area.size = as.numeric(st_area(.$geometry))) %>% 
+    mutate(subpolygon.area.size.prior = subpolygon.area.size * !!as.name(prior.var)) %>% 
+    group_by(seed) %>% 
+    mutate(den = sum(subpolygon.area.size.prior)) %>% 
+    ungroup() %>% 
+    mutate(c.subpolygon.per.unit = (!!as.name(prior.var) * phones.sum) / den) %>% 
+    mutate(c.subpolygon = c.subpolygon.per.unit * subpolygon.area.size) %>% 
+    mutate(subpolygon.name = paste(seed, !!as.name(prior.var), sep = "_"))
   
   Voronoi.regions.plot <- seed.voronoi.est %>%
+    # filter(seed == "ME.100.C.2") %>% 
     ggplot() +
-    # geom_sf(aes(fill = phones.sum), color = "blue") +
+    # geom_sf(aes(fill = factor(c.subpolygon.per.unit))) +
     geom_sf(color = "blue") +
     theme(text = element_text(size = 13))
   # scale_fill_viridis_c("Phones") +
@@ -703,12 +930,12 @@ VOR_est <- function(area, cellplan.combined, signal.strength.comb.dt, C.vec.df, 
   # final datatset to calculate spatial density
   seed.voronoi.final <- seed.intersect.tiles %>% 
     st_drop_geometry() %>% 
-    dplyr::select(tile.id, seed, amount.tiles) %>% 
-    right_join(seed.voronoi.tile, by = c("tile.id", "seed")) %>% 
+    dplyr::select(tile.id, subpolygon.name, amount.tiles) %>% 
+    right_join(seed.voronoi.tile, by = c("tile.id", "subpolygon.name")) %>% 
     mutate(amount.tiles = case_when(is.na(amount.tiles) ~ 1,
                                     TRUE ~ amount.tiles)) %>% 
     group_by(tile.id) %>% 
-    summarise(u.VOR = weighted.mean(x = vor.est, w = amount.tiles) * base.tile.size^2)
+    summarise(u.VOR = weighted.mean(x = c.subpolygon.per.unit, w = amount.tiles) * base.tile.size^2)
   # should result in same length as the raw tiles object and the sum of the voronoi est corrected should resemble the sum of the c.vec
   
   
@@ -716,8 +943,6 @@ VOR_est <- function(area, cellplan.combined, signal.strength.comb.dt, C.vec.df, 
               Voronoi.regions.plot = Voronoi.regions.plot))
   
 }
-
-
 
 
 
