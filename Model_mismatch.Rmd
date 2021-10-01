@@ -121,15 +121,18 @@ names.network.noise <- names(P.long.noise.complete.df)
 
 P.long.noise.df <- P.long.noise.complete.df %>% 
   map(~filter(., !s.mismatch.mag < 0.05)) %>% # define minimum threshold 
-  map(~mutate(., pij = con_llh_sens_custom(., "s.mismatch.mag", digits = 3))) %>% 
-  map(~mutate(., supertile.id = create_supertile_index(., elements = c("tile.id.chr", "cell.chr", "pij", "a")))) %>% 
-  map(~mutate(., supertile.id.chr = as.numeric(supertile.id))) %>%
-  map(~mutate(., supertile.id.fac = factor(supertile.id.chr))) %>% 
-  map(~mutate(., supertile.id.num = as.numeric(supertile.id))) %>% 
-  map(~dplyr::select(., -supertile.id)) %>% 
-  map2(., paste0("supertile.id.chr_", names.network.noise), ~rename(.x, !!.y := contains("supertile.id.chr"))) %>% 
-  map2(., paste0("supertile.id.fac_", names.network.noise), ~rename(.x, !!.y := contains("supertile.id.fac"))) %>% 
-  map2(., paste0("supertile.id.num_", names.network.noise), ~rename(.x, !!.y := contains("supertile.id.num")))
+  map(~mutate(., pij = con_llh_sens_custom(., "s.mismatch.mag", digits = 3)))
+
+# Only relevant for supertiles
+
+  # map(~mutate(., supertile.id = create_supertile_index(., elements = c("tile.id.chr", "cell.chr", "pij", "a")))) %>% 
+  # map(~mutate(., supertile.id.chr = as.numeric(supertile.id))) %>%
+  # map(~mutate(., supertile.id.fac = factor(supertile.id.chr))) %>% 
+  # map(~mutate(., supertile.id.num = as.numeric(supertile.id))) %>% 
+  # map(~dplyr::select(., -supertile.id)) %>% 
+  # map2(., paste0("supertile.id.chr_", names.network.noise), ~rename(.x, !!.y := contains("supertile.id.chr"))) %>% 
+  # map2(., paste0("supertile.id.fac_", names.network.noise), ~rename(.x, !!.y := contains("supertile.id.fac"))) %>% 
+  # map2(., paste0("supertile.id.num_", names.network.noise), ~rename(.x, !!.y := contains("supertile.id.num")))
   
 # saveRDS(P.long.noise.df, "workflow_objects/P.long.noise.df.rds")     
 ```
@@ -233,15 +236,18 @@ names.network.quant <- names(P.long.quant.complete.df)
 
 P.long.quant.df <- P.long.quant.complete.df %>% 
   map(~filter(., !quant.mag < 0.05)) %>% # define minimum threshold 
-  map(~mutate(., pij = con_llh_sens_custom(., "quant.mag", digits = 3))) %>% 
-  map(~mutate(., supertile.id = create_supertile_index(., elements = c("tile.id.chr", "cell.chr", "pij", "a")))) %>% 
-  map(~mutate(., supertile.id.chr = as.numeric(supertile.id))) %>%
-  map(~mutate(., supertile.id.fac = factor(supertile.id.chr))) %>% 
-  map(~mutate(., supertile.id.num = as.numeric(supertile.id))) %>% 
-  map(~dplyr::select(., -supertile.id)) %>% 
-  map2(., paste0("supertile.id.chr_", names.network.quant), ~rename(.x, !!.y := contains("supertile.id.chr"))) %>% 
-  map2(., paste0("supertile.id.fac_", names.network.quant), ~rename(.x, !!.y := contains("supertile.id.fac"))) %>% 
-  map2(., paste0("supertile.id.num_", names.network.quant), ~rename(.x, !!.y := contains("supertile.id.num")))
+  map(~mutate(., pij = con_llh_sens_custom(., "quant.mag", digits = 3)))
+
+# Only relevant for supertiles
+
+  # map(~mutate(., supertile.id = create_supertile_index(., elements = c("tile.id.chr", "cell.chr", "pij", "a")))) %>% 
+  # map(~mutate(., supertile.id.chr = as.numeric(supertile.id))) %>%
+  # map(~mutate(., supertile.id.fac = factor(supertile.id.chr))) %>% 
+  # map(~mutate(., supertile.id.num = as.numeric(supertile.id))) %>% 
+  # map(~dplyr::select(., -supertile.id)) %>% 
+  # map2(., paste0("supertile.id.chr_", names.network.quant), ~rename(.x, !!.y := contains("supertile.id.chr"))) %>% 
+  # map2(., paste0("supertile.id.fac_", names.network.quant), ~rename(.x, !!.y := contains("supertile.id.fac"))) %>% 
+  # map2(., paste0("supertile.id.num_", names.network.quant), ~rename(.x, !!.y := contains("supertile.id.num")))
 
 # saveRDS(P.long.quant.df, "workflow_objects/P.long.quant.df.rds")  
 
@@ -343,64 +349,118 @@ new.df.theo.vars <- quant.levels %>%
 # ggsave("workflow_objects//theo.quant.plot.png", theo.quant.plot, device = "png")
 ```
 
-## Estimation
+## Estimation 
+
+### With supertiles
 
 ```{r estimation-input-parameters}
-## estimation
+# ## estimation
+# 
+# P.long.mismatch.complete <- c(P.long.noise.df, P.long.quant.df) %>% 
+#   discard(str_detect(names(.), "quant_true"))
+# mismatch.versions <- names(P.long.mismatch.complete)
+# 
+# 
+# supertile.joiner.prior <- P.long.mismatch.complete %>% 
+#   map(., ~right_join(.x, area$area.df, 
+#                      by = c("tile.id.num", "tile.id.fac", "tile.id.chr", "a"))) %>% 
+#   map(~dplyr::select(., tile.id.num, a, contains("supertile.id.num"))) %>%
+#   map(distinct) %>% 
+#   map(~arrange(., tile.id.num)) 
+# 
+# supertile.joiner <- supertile.joiner.prior %>% 
+#   map(~dplyr::select(., tile.id.num, contains("supertile.id.num")))
+# 
+# 
+# ### supertile helper
+# P.star.supertile.helper <- P.long.mismatch.complete %>%
+#   map(~dplyr::select(., contains("supertile.id"), contains("cell"), pij)) %>% 
+#   map(distinct) %>% 
+#   map(~arrange(., cell.num))
+# 
+# 
+# ### datatable versions
+# P.star.matrices.dt <- P.star.supertile.helper %>%
+#   map(~dplyr::select(., i = cell.num, contains("supertile.id.num"), pij)) %>% 
+#   map(~rename(., j = contains("supertile.id.num"))) %>% 
+#   map(as.data.table)
+# 
+# 
+# ### spm versions
+# P.star.matrices.spm <- P.star.supertile.helper %>%
+#   map(~dplyr::select(., i = cell.num, contains("supertile.id.num"), x = pij)) %>% 
+#   map(~rename(., j = contains("supertile.id.num"))) %>% 
+#   map(~sparseMatrix(i = .$i, j = .$j, x = .$x))
+# 
+# 
+# ### prior vector versions
+# a.tile.helper <- supertile.joiner.prior %>% 
+#   map(~dplyr::select(., contains("supertile.id.num"), a)) %>% 
+#   map(~group_by(., across(contains("supertile.id.num")))) %>% 
+#   map(~summarise(., a = sum(a))) %>% # uniform vector of number of normal tiles
+#   map(drop_na) # uncovered tiles
+# 
+# a.tile.vec <- a.tile.helper %>% 
+#   map(deframe)
+# 
+# a.tile.dt <- a.tile.helper %>% 
+#   map(~dplyr::select(., j = contains("supertile.id.num"), u = a)) %>% 
+#   map(as.data.table)
+# 
+# ### C vector, adding antennas that have 0 phones to complete the vector, arranging it according to the antenna.ID and saving as vector
+# c.vec <- P.long.complete.df %>% 
+#   map(~distinct(., cell.num, phones.sum)) %>% 
+#   map2(., cellplans.list, ~right_join(.x, .y$cellplan.combined.df, by = "cell.num")) %>% 
+#   map(~mutate(., phones.sum = case_when(is.na(phones.sum) ~ 0,
+#                                 TRUE ~ phones.sum))) %>% 
+#   map(~arrange(., cell.num)) %>% 
+#   rep(., length(mismatch.versions) / length(.))
+# 
+# # define c-vector in datatable version
+# c.vec.dt <- map(c.vec, ~data.table(i = .x$cell.num,
+#                                    c = .x$phones.sum))
+# 
+# n.iter.MLE = 200
+```
 
+### Without supertiles
+
+```{r}
+## estimation
 P.long.mismatch.complete <- c(P.long.noise.df, P.long.quant.df) %>% 
   discard(str_detect(names(.), "quant_true"))
 mismatch.versions <- names(P.long.mismatch.complete)
 
 
-supertile.joiner.prior <- P.long.mismatch.complete %>% 
-  map(., ~right_join(.x, area$area.df, 
-                     by = c("tile.id.num", "tile.id.fac", "tile.id.chr", "a"))) %>% 
-  map(~dplyr::select(., tile.id.num, a, contains("supertile.id.num"))) %>%
-  map(distinct) %>% 
-  map(~arrange(., tile.id.num)) 
-
-supertile.joiner <- supertile.joiner.prior %>% 
-  map(~dplyr::select(., tile.id.num, contains("supertile.id.num")))
-
-
-### supertile helper
-P.star.supertile.helper <- P.long.mismatch.complete %>%
-  map(~dplyr::select(., contains("supertile.id"), contains("cell"), pij)) %>% 
-  map(distinct) %>% 
-  map(~arrange(., cell.num))
-
-
 ### datatable versions
-P.star.matrices.dt <- P.star.supertile.helper %>%
-  map(~dplyr::select(., i = cell.num, contains("supertile.id.num"), pij)) %>% 
-  map(~rename(., j = contains("supertile.id.num"))) %>% 
+P.star.matrices.dt <- P.long.mismatch.complete %>%
+  map(~arrange(., cell.num)) %>% 
+  map(~dplyr::select(., i = cell.num, contains("tile.id.num"), pij)) %>% 
+  map(~rename(., j = contains("tile.id.num"))) %>% 
   map(as.data.table)
 
 
 ### spm versions
-P.star.matrices.spm <- P.star.supertile.helper %>%
-  map(~dplyr::select(., i = cell.num, contains("supertile.id.num"), x = pij)) %>% 
-  map(~rename(., j = contains("supertile.id.num"))) %>% 
+P.star.matrices.spm <- P.long.mismatch.complete %>%
+  map(~arrange(., cell.num)) %>% 
+  map(~dplyr::select(., i = cell.num, contains("tile.id.num"), x = pij)) %>% 
+  map(~rename(., j = contains("tile.id.num"))) %>% 
   map(~sparseMatrix(i = .$i, j = .$j, x = .$x))
 
 
 ### prior vector versions
-a.tile.helper <- supertile.joiner.prior %>% 
-  map(~dplyr::select(., contains("supertile.id.num"), a)) %>% 
-  map(~group_by(., across(contains("supertile.id.num")))) %>% 
-  map(~summarise(., a = sum(a))) %>% # uniform vector of number of normal tiles
-  map(drop_na) # uncovered tiles
+a.tile.helper <- area$area.df %>% 
+  dplyr::select(contains("tile.id.num"), a)
 
 a.tile.vec <- a.tile.helper %>% 
-  map(deframe)
+  deframe()
 
 a.tile.dt <- a.tile.helper %>% 
-  map(~dplyr::select(., j = contains("supertile.id.num"), u = a)) %>% 
-  map(as.data.table)
+  dplyr::select(j = contains("supertile.id.num"), u = a) %>% 
+  as.data.table()
 
 ### C vector, adding antennas that have 0 phones to complete the vector, arranging it according to the antenna.ID and saving as vector
-c.vec <- P.long.complete.df %>% 
+c.vec <- gen.model.objects$P.long.complete.df %>% 
   map(~distinct(., cell.num, phones.sum)) %>% 
   map2(., cellplans.list, ~right_join(.x, .y$cellplan.combined.df, by = "cell.num")) %>% 
   map(~mutate(., phones.sum = case_when(is.na(phones.sum) ~ 0,
@@ -414,6 +474,8 @@ c.vec.dt <- map(c.vec, ~data.table(i = .x$cell.num,
 
 n.iter.MLE = 200
 ```
+
+
 
 ### Voronoi estimators
 
