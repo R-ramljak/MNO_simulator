@@ -1,6 +1,6 @@
 ---
-title: "Supplementary material: Toyworld generation, Estimation and Evaluation"
-author: "Fabio Ricciato, Angelo Coluccia, Marco Ramljak"
+title: "Toyworld Generation"
+author: "Marco Ramljak, Fabio Ricciato"
 date: "`r Sys.Date()`"
 output:
   bookdown::html_document2:
@@ -28,7 +28,7 @@ This notebook provides supplementary material as well as the complete code for r
 
 Furthermore, custom functions have been built and are used throughout this notebook, which can be found [here](https://github.com/R-ramljak/MNO_mobdensity/blob/master/Code/pipeline%20functions.R). In near time, these will be released within an R-package.
 
-The notebook has three main sections: Toyworld Generation, Estimation, Evaluation.
+This notebook has three main sections: Toyworld Generation, Estimation, Evaluation.
 
 # General Setup: Loading Packages and Custom Functions
 
@@ -92,21 +92,33 @@ munich.raster <- rasterFromXYZ(munich.raw, crs = st_crs(3035)$proj4string)
 munich <- NULL
 
 # define sf version of raster object
-munich$area.sf <- munich.raster %>%
+munich$area.sf.raw <- munich.raster %>%
   st_as_stars() %>%
   st_as_sf() %>%
-  mutate(centroid.geometry = st_centroid(.$geometry)) %>% 
-  mutate(X.centroid = unlist(map(.$centroid.geometry, 1)),
-         Y.centroid = unlist(map(.$centroid.geometry, 2))) %>% 
-  dplyr::select(tile.id, pop, elevation, X.centroid, Y.centroid) %>%
   mutate(tile.id.chr = as.character(tile.id)) %>% 
   mutate(tile.id.fac = factor(tile.id.chr)) %>% 
   mutate(tile.id.num = as.numeric(tile.id.fac)) %>% 
-  mutate(type = "NA") # only necessary if different tile types can be defined (urban, rural, etc...)
+  mutate(type = "NA") %>%  # only necessary if different tile types can be defined (urban, rural, etc...)
+  mutate(prior.uninformative = 1, # uniform prior
+         prior.informative.3 = case_when(pop == 0 ~ 1,
+                                     pop > 0 & pop <= 10 ~ 10,
+                                     pop > 10 ~ 100)) %>% # 3 category prior
+    dplyr::select(contains("tile.id"), pop, type, elevation, contains("prior"))
+
+# define sf version with only centroids
+munich$area.sf <- munich$area.sf.raw %>%
+  mutate(centroid.geometry = st_centroid(.$geometry)) %>% 
+  mutate(X.centroid = unlist(map(.$centroid.geometry, 1)),
+         Y.centroid = unlist(map(.$centroid.geometry, 2))) 
+  
 
 # regular dataframe version
 munich$area.df <- munich$area.sf %>%
   st_drop_geometry()
+
+# prior value reduced dataframe version
+munich$area.prior <- munich$area.df %>% 
+  dplyr::select(tile.id.chr, contains("prior."))
 
 # variable reduced dataframe version
 munich$area.reduced.df <- munich$area.df %>% 
@@ -150,13 +162,6 @@ area$area.sf %>%
 
 ```
 
-```{r pop-summary}
-# summary descriptives of GTP
-pop_summary_results(area$area.sf) %>% 
-  dplyr::select(n.tiles = n.type, mean.pop, sd.pop, min.pop, max.pop, sum.pop)
-
-```
-
 ```{r density-plot, fig.cap="ECCDF and ECDF of the ground truth population, (Insert ECDF capped at 30)"}
 # ECCDF and ECDF of GTP
 (density_plots(area$area.df))
@@ -180,7 +185,7 @@ On each tower three directional antennas are placed that are directed in a 120°
 The antennas are specified with layer specific parameters (e.g. height, power, path loss exponent, etc.). All antennas are specified in a so called cellplan in which all parameters are nested/adjusted. When the cellplan is completed the antenna specific broadcasting profile (i.e. cell profile) is estimated and projected onto the focus area. The function `compute_sig_strength()` computes the distance, signal strength and signal dominance between any tile and any antenna. Furthermore, a minimum parameter is implemented that defines the minimum signal dominance value an antenna-tile relationship needs to have in order to be considered "covered". For the following estimators, it needs to be assured that every tile is sufficiently covered, meaning, that there is at least one antenna-tile relationship that has a signal dominance value higher than the minimum threshold.
 
 
-
+### Toyworld 1: One layer, sparse network
 
 ```{r, network-parameters, message=FALSE, warning=FALSE, fig.height=8, fig.width=10, fig.cap="Theoretical radio network parameters for each layer"}
 # specify parameters of each cell
@@ -203,9 +208,9 @@ param.df.reduced <- param.df %>%
 sig.pram.plots <- sig_param_plots(param.df = param.df, range.max = 20000, base_size = 11)
 
 # print
-(a <- ggpubr::as_ggplot(sig.pram.plots$final))
+(coverage.diag <- ggpubr::as_ggplot(sig.pram.plots$final))
 # save
-ggsave("Plots/coverage.diag.png", a, device = "png", width = 10)
+ggsave("Plots/coverage.diag.png", coverage.diag, device = "png", width = 10)
 
 set.seed(100)
 
@@ -231,6 +236,7 @@ paste0("Number of tiles which do not reach the signal dominance threshold of: " 
 
 ```
 
+### Toyworld 2: One layer, dense network
 
 ```{r, network-parameters, message=FALSE, warning=FALSE, fig.height=8, fig.width=10, fig.cap="Theoretical radio network parameters for each layer"}
 # specify parameters of each cell
@@ -253,9 +259,9 @@ param.df.reduced <- param.df %>%
 sig.pram.plots <- sig_param_plots(param.df = param.df, range.max = 20000, base_size = 11)
 
 # print
-(a <- ggpubr::as_ggplot(sig.pram.plots$final))
+(coverage.diag <- ggpubr::as_ggplot(sig.pram.plots$final))
 # save
-ggsave("Plots/coverage.diag.png", a, device = "png", width = 10)
+ggsave("Plots/coverage.diag.png", coverage.diag, device = "png", width = 10)
 
 set.seed(100)
 
@@ -281,6 +287,8 @@ paste0("Number of tiles which do not reach the signal dominance threshold of: " 
 
 ```
 
+
+### Toyworld 3: Three layer network
 
 ```{r, network-parameters, message=FALSE, warning=FALSE, fig.height=8, fig.width=10, fig.cap="Theoretical radio network parameters for each layer"}
 # specify parameters of each cell
@@ -314,9 +322,9 @@ param.df.reduced <- param.df %>%
 sig.pram.plots <- sig_param_plots(param.df = param.df, range.max = 20000, base_size = 11)
 
 # print
-(a <- ggpubr::as_ggplot(sig.pram.plots$final))
+(coverage.diag <- ggpubr::as_ggplot(sig.pram.plots$final))
 # save
-ggsave("Plots/coverage.diag.png", a, device = "png", width = 10)
+ggsave("Plots/coverage.diag.png", coverage.diag, device = "png", width = 10)
 
 set.seed(100)
 
@@ -327,13 +335,13 @@ layer.params.ext <- list(
             subscript = "MA",
             seed = 3,
             mobloc.params = MA.cell.param.mobloc),
-    ME = list(tower.dist = 3500,
+  ME = list(tower.dist = 3500,
             rotation.deg = 35,
             jitter = 700,
             subscript = "ME",
             seed = 7,
             mobloc.params = ME.cell.param.mobloc),
-    MI = list(tower.dist = 10000,
+  MI = list(tower.dist = 10000,
             rotation.deg = 60,
             jitter = 2000,
             subscript = "MI",
@@ -354,6 +362,7 @@ paste0("Number of tiles which do not reach the signal dominance threshold of: " 
 
 ```
 
+### Toyworld 4: Two layer network
 
 ```{r, network-parameters, message=FALSE, warning=FALSE, fig.height=8, fig.width=10, fig.cap="Theoretical radio network parameters for each layer"}
 # specify parameters of each cell
@@ -379,9 +388,9 @@ param.df.reduced <- param.df %>%
 sig.pram.plots <- sig_param_plots(param.df = param.df, range.max = 20000, base_size = 11)
 
 # print
-(a <- ggpubr::as_ggplot(sig.pram.plots$final))
+(coverage.diag <- ggpubr::as_ggplot(sig.pram.plots$final))
 # save
-ggsave("Plots/coverage.diag.png", a, device = "png", width = 10)
+ggsave("Plots/coverage.diag.png", coverage.diag, device = "png", width = 10)
 
 set.seed(100)
 
@@ -413,12 +422,12 @@ paste0("Number of tiles which do not reach the signal dominance threshold of: " 
 
 ```
 
-
+## Device-to-cell association (Generative model)
 
 ```{r}
 cellplans.list <- list(cellplan.1.layer.1 = cellplan.1.layer.1,
-                       cellplan.1.layer.2 = cellplan.1.layer.2,
-                       cellplan.3.layer = cellplan.3.layer,
+                       # cellplan.1.layer.2 = cellplan.1.layer.2,
+                       # cellplan.3.layer = cellplan.3.layer,
                        cellplan.2.layer = cellplan.2.layer)
 
 saveRDS(cellplans.list, "workflow_objects/cellplans.list.rds")
