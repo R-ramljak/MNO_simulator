@@ -71,7 +71,7 @@ noise.expression <- c(no_03 = "runif(min = -3, max = 3",
                       # no_12 = "runif(min = -12, max = 12",
                       # no_15 = "runif(min = -15, max = 15",
                       # no_18 = "runif(min = -18, max = 18",
-                      no_21 = "runif(min = -21, max = 21",
+                      #no_21 = "runif(min = -21, max = 21",
                       no_true = "runif(min = 0, max = 0")
 
 noise.expression.wo.true <- names(noise.expression)[!names(noise.expression) == ("no_true")]
@@ -196,14 +196,15 @@ dense.names.noise <- names(P.long.noise.complete.df) %>%
 ```{r}
 # define the number of bits --> final number of levels are 2^n + 1
 
-quant.levels <- c(quant_00 = 0,
-                  # quant_01 = 1,
-                  # quant_02 = 2,
-                  quant_03 = 3,
-                  # quant_04 = 4,
-                  # quant_05 = 5,
-                  # quant_10 = 10,
-                  quant_true = 0) # last version is just a placeholder, the "0" is meaningless
+quant.levels <- c(
+  # quant_00 = 0,
+  # quant_01 = 1,
+  # quant_02 = 2,
+  quant_03 = 3,
+  # quant_04 = 4,
+  # quant_05 = 5,
+  # quant_10 = 10,
+  quant_true = 0) # last version is just a placeholder, the "0" is meaningless
 
 quant.levels.wo.true <- names(quant.levels)[!names(quant.levels) == ("quant_true")]
 quant.levels.only.true <- names(quant.levels)[names(quant.levels) == ("quant_true")]
@@ -449,14 +450,25 @@ P.star.matrices.spm <- P.long.mismatch.complete %>%
 
 
 ### prior vector versions
-a.tile.helper <- area$area.df %>% 
-  dplyr::select(contains("tile.id.num"), a)
+a.tile.helper.informative <- area$area.df %>% 
+  dplyr::select(contains("tile.id.num"), prior.informative.3)
 
-a.tile.vec <- a.tile.helper %>% 
+a.tile.vec.informative <- a.tile.helper.informative %>% 
   deframe()
 
-a.tile.dt <- a.tile.helper %>% 
-  dplyr::select(j = contains("supertile.id.num"), u = a) %>% 
+a.tile.dt.informative <- a.tile.helper.informative %>% 
+  dplyr::select(j = contains("tile.id.num"), u = prior.informative.3) %>% 
+  as.data.table()
+
+
+a.tile.helper.uninformative <- area$area.df %>% 
+  dplyr::select(contains("tile.id.num"), prior.uninformative)
+
+a.tile.vec.uninformative <- a.tile.helper.uninformative %>% 
+  deframe()
+
+a.tile.dt.uninformative <- a.tile.helper.uninformative %>% 
+  dplyr::select(j = contains("tile.id.num"), u = prior.uninformative) %>% 
   as.data.table()
 
 ### C vector, adding antennas that have 0 phones to complete the vector, arranging it according to the antenna.ID and saving as vector
@@ -473,6 +485,23 @@ c.vec.dt <- map(c.vec, ~data.table(i = .x$cell.num,
                                    c = .x$phones.sum))
 
 n.iter.MLE = 200
+
+
+
+### Specifically for Voronoi
+VOR.input.list <- list(
+  cellplan.combined = flatten(cellplans.list) %>% 
+    keep(str_detect(names(.), "cellplan.combined.df")) %>%
+    set_names(names(cellplans.list)), 
+  signal.strength.comb.dt = flatten(cellplans.list) %>% 
+    keep(str_detect(names(.), "signal.strength.comb.dt")) %>% 
+    set_names(names(cellplans.list)), 
+  C.vec.df =  gen.model.objects$C.vec.df.list)
+
+
+cellplan.combined <- cellplans.list$cellplan.3.layer$cellplan.combined.df
+signal.strength.comb.dt <- cellplans.list$cellplan.3.layer$signal.strength.comb.dt
+C.vec.df <- gen.model.objects$C.vec.df.list$cellplan.3.layer
 ```
 
 
@@ -481,77 +510,139 @@ n.iter.MLE = 200
 
 ```{r VOR.tower, warning=FALSE, echo=FALSE, out.width="50%"}
 # Voronoi estimation with tower locations as seeds
-VOR.tower.names.est <- paste0("u.VOR.tower_", names(tower.dist.list))
-VOR.input.list <- list(cellplan.combined, signal.strength.comb.dt, C.vec.df)
+VOR.tower.names.est <- paste0("u.VOR.tower_", names(gen.model.objects$C.vec.df.list))
+VOR.tower.informative <- pmap(VOR.input.list, ~VOR_est(area = area, 
+                                                       cellplan.combined = ..1, 
+                                                       signal.strength.comb.dt = ..2, 
+                                                       C.vec.df = ..3, 
+                                                       prior.var = "prior.informative.3",
+                                                       seed = "tower"))
 
-VOR.tower <- pmap(VOR.input.list, ~VOR_est(area = area, 
-                                           cellplan.combined = ..1, 
-                                           signal.strength.comb.dt = ..2, 
-                                           C.vec.df = ..3, 
-                                           seed = "tower"))
-VOR.tower.est <- VOR.tower %>% 
+VOR.tower.uninformative <- pmap(VOR.input.list, ~VOR_est(area = area, 
+                                                       cellplan.combined = ..1, 
+                                                       signal.strength.comb.dt = ..2, 
+                                                       C.vec.df = ..3, 
+                                                       prior.var = "prior.uninformative",
+                                                       seed = "tower"))
+
+VOR.tower.est.informative <- VOR.tower.informative %>% 
   map(~mutate(.x$seed.voronoi.final, tile.id.chr = as.character(tile.id))) %>% 
-  map_at(c(1), ~dplyr::select(., tile.id.chr, u.VOR.tower = u.VOR)) %>% 
-  map_at(-c(1), ~dplyr::select(., u.VOR.tower = u.VOR)) %>% 
+  map_at(c(1), ~dplyr::select(., tile.id.chr, u.VOR.tower.informative = u.VOR)) %>% 
+  map_at(-c(1), ~dplyr::select(., u.VOR.tower.informative = u.VOR)) %>% 
   map2(., VOR.tower.names.est, ~rename_with(.x, 
                                             stringr::str_replace, 
                                             pattern = "u.VOR.tower", replacement = .y, 
                                             .cols = starts_with("u.VOR.tower"))) %>% 
   bind_cols()
 
-VOR.tower$dense$Voronoi.regions.plot +
-  labs(subtitle = "dense", title = "seed = tower")
-VOR.tower$sparse$Voronoi.regions.plot +
-  labs(subtitle = "sparse", title = "seed = tower")
+VOR.tower.est.uninformative <- VOR.tower.uninformative %>% 
+  map(~mutate(.x$seed.voronoi.final, tile.id.chr = as.character(tile.id))) %>% 
+  map_at(c(1), ~dplyr::select(., tile.id.chr, u.VOR.tower.uninformative = u.VOR)) %>% 
+  map_at(-c(1), ~dplyr::select(., u.VOR.tower.uninformative = u.VOR)) %>% 
+  map2(., VOR.tower.names.est, ~rename_with(.x, 
+                                            stringr::str_replace, 
+                                            pattern = "u.VOR.tower", replacement = .y, 
+                                            .cols = starts_with("u.VOR.tower"))) %>% 
+  bind_cols()
+
+VOR.tower.both <- left_join(VOR.tower.est.informative, VOR.tower.est.uninformative, by = "tile.id.chr")
+
+# VOR.tower$dense$Voronoi.regions.plot +
+#   labs(subtitle = "dense", title = "seed = tower")
+# VOR.tower$sparse$Voronoi.regions.plot +
+#   labs(subtitle = "sparse", title = "seed = tower")
 ```
 
 ```{r VOR.offset, warning=FALSE, echo=FALSE, out.width="50%"}
 # Voronoi estimation with cell locations + offset as seeds
-VOR.offset.names.est <- paste0("u.VOR.offset_", names(tower.dist.list))
-VOR.offset <- pmap(VOR.input.list, ~VOR_est(area = area, 
+VOR.offset.names.est <- paste0("u.VOR.offset_", names(gen.model.objects$C.vec.df.list))
+VOR.offset.informative <- pmap(VOR.input.list, ~VOR_est(area = area, 
                                             cellplan.combined = ..1, 
                                             signal.strength.comb.dt = ..2, 
                                             C.vec.df = ..3, 
+                                            prior.var = "prior.informative.3",
                                             seed = "cell.offset",
                                             offset = 10)) 
-VOR.offset.est <- VOR.offset %>% 
+
+VOR.offset.uninformative <- pmap(VOR.input.list, ~VOR_est(area = area, 
+                                            cellplan.combined = ..1, 
+                                            signal.strength.comb.dt = ..2, 
+                                            C.vec.df = ..3, 
+                                            prior.var = "prior.uninformative",
+                                            seed = "cell.offset",
+                                            offset = 10)) 
+
+VOR.offset.est.informative <- VOR.offset.informative %>% 
   map(~mutate(.x$seed.voronoi.final, tile.id.chr = as.character(tile.id))) %>% 
-  map_at(c(1), ~dplyr::select(., tile.id.chr, u.VOR.offset = u.VOR)) %>% 
-  map_at(-c(1), ~dplyr::select(., u.VOR.offset = u.VOR)) %>% 
+  map_at(c(1), ~dplyr::select(., tile.id.chr, u.VOR.offset.informative = u.VOR)) %>% 
+  map_at(-c(1), ~dplyr::select(., u.VOR.offset.informative = u.VOR)) %>% 
   map2(., VOR.offset.names.est, ~rename_with(.x, 
                                             stringr::str_replace, 
                                             pattern = "u.VOR.offset", replacement = .y, 
                                             .cols = starts_with("u.VOR.offset"))) %>% 
   bind_cols()
 
-VOR.offset$dense$Voronoi.regions.plot +
-  labs(subtitle = "dense", title = "seed = offset")
-VOR.offset$sparse$Voronoi.regions.plot +
-  labs(subtitle = "sparse", title = "seed = offset")
+VOR.offset.est.uninformative <- VOR.offset.uninformative %>% 
+  map(~mutate(.x$seed.voronoi.final, tile.id.chr = as.character(tile.id))) %>% 
+  map_at(c(1), ~dplyr::select(., tile.id.chr, u.VOR.offset.uninformative = u.VOR)) %>% 
+  map_at(-c(1), ~dplyr::select(., u.VOR.offset.uninformative = u.VOR)) %>% 
+  map2(., VOR.offset.names.est, ~rename_with(.x, 
+                                            stringr::str_replace, 
+                                            pattern = "u.VOR.offset", replacement = .y, 
+                                            .cols = starts_with("u.VOR.offset"))) %>% 
+  bind_cols()
+
+VOR.offset.both <- left_join(VOR.offset.est.informative, VOR.offset.est.uninformative, by = "tile.id.chr")
+
+# VOR.offset$dense$Voronoi.regions.plot +
+#   labs(subtitle = "dense", title = "seed = offset")
+# VOR.offset$sparse$Voronoi.regions.plot +
+#   labs(subtitle = "sparse", title = "seed = offset")
 ```
 
 ```{r VOR.barycenter, warning=FALSE, echo=FALSE, out.width="50%"}
 # Voronoi estimation with cell barycenter locations as seeds
-VOR.barycenter.names.est <- paste0("u.VOR.barycenter_", names(tower.dist.list))
-VOR.barycenter <- pmap(VOR.input.list, ~VOR_est(area = area, 
+VOR.barycenter.names.est <- paste0("u.VOR.barycenter_", names(gen.model.objects$C.vec.df.list))
+VOR.barycenter.informative <- pmap(VOR.input.list, ~VOR_est(area = area, 
                                                 cellplan.combined = ..1, 
                                                 signal.strength.comb.dt = ..2, 
                                                 C.vec.df = ..3, 
+                                                prior.var = "prior.informative.3",
                                                 seed = "cell.barycenter")) 
-VOR.barycenter.est <- VOR.barycenter %>% 
+
+VOR.barycenter.uninformative <- pmap(VOR.input.list, ~VOR_est(area = area, 
+                                                cellplan.combined = ..1, 
+                                                signal.strength.comb.dt = ..2, 
+                                                C.vec.df = ..3, 
+                                                prior.var = "prior.uninformative",
+                                                seed = "cell.barycenter")) 
+
+VOR.barycenter.est.informative <- VOR.barycenter.informative %>% 
   map(~mutate(.x$seed.voronoi.final, tile.id.chr = as.character(tile.id))) %>% 
-  map_at(c(1), ~dplyr::select(., tile.id.chr, u.VOR.barycenter = u.VOR)) %>% 
-  map_at(-c(1), ~dplyr::select(., u.VOR.barycenter = u.VOR)) %>% 
+  map_at(c(1), ~dplyr::select(., tile.id.chr, u.VOR.barycenter.informative = u.VOR)) %>% 
+  map_at(-c(1), ~dplyr::select(., u.VOR.barycenter.informative = u.VOR)) %>% 
   map2(., VOR.barycenter.names.est, ~rename_with(.x, 
                                             stringr::str_replace, 
                                             pattern = "u.VOR.barycenter", replacement = .y, 
                                             .cols = starts_with("u.VOR.barycenter"))) %>% 
   bind_cols()
 
-VOR.barycenter$dense$Voronoi.regions.plot +
-  labs(subtitle = "dense", title = "seed = barycenter")
-VOR.barycenter$sparse$Voronoi.regions.plot +
-  labs(subtitle = "sparse", title = "seed = barycenter")
+VOR.barycenter.est.uninformative <- VOR.barycenter.uninformative %>% 
+  map(~mutate(.x$seed.voronoi.final, tile.id.chr = as.character(tile.id))) %>% 
+  map_at(c(1), ~dplyr::select(., tile.id.chr, u.VOR.barycenter.uninformative = u.VOR)) %>% 
+  map_at(-c(1), ~dplyr::select(., u.VOR.barycenter.uninformative = u.VOR)) %>% 
+  map2(., VOR.barycenter.names.est, ~rename_with(.x, 
+                                            stringr::str_replace, 
+                                            pattern = "u.VOR.barycenter", replacement = .y, 
+                                            .cols = starts_with("u.VOR.barycenter"))) %>% 
+  bind_cols()
+
+VOR.barycenter.both <- left_join(VOR.barycenter.est.informative, VOR.barycenter.est.uninformative, by = "tile.id.chr")
+
+# VOR.barycenter$dense$Voronoi.regions.plot +
+#   labs(subtitle = "dense", title = "seed = barycenter")
+# VOR.barycenter$sparse$Voronoi.regions.plot +
+#   labs(subtitle = "sparse", title = "seed = barycenter")
 ```
 
 ### MLE/EM estimator
@@ -565,7 +656,7 @@ MLE.est <- pmap(MLE.input.list,
                   ~EM_est(c.vec.dt = ..1, 
                           P.dt = ..2, 
                           a.vec.dt = ..3, 
-                          selected.range = c(1, 2, 5, 10, 50, 100, 200),
+                          selected.range = c(1, 5, 200),
                           n.iter = n.iter.MLE,
                           message = F, 
                           ldt = 10^-04)) %>% 
@@ -618,7 +709,7 @@ DF.input.list <- list(c.vec.dt, P.star.matrices.dt, DF.raw.est.dt)
 DF.est <- pmap(DF.input.list, ~EM_est(c.vec.dt = ..1, 
                                           P.dt = ..2, 
                                           a.vec.dt = ..3, 
-                                          selected.range = c(1, 2, 5, 10, 50, 100, 200),
+                                          selected.range = c(1, 5, 200),
                                           n.iter = n.iter.MLE,
                                           message = F, 
                                           ldt = 10^-04)) %>% 
@@ -648,13 +739,13 @@ DF.est <- pmap(DF.input.list, ~EM_est(c.vec.dt = ..1,
 ```{r estimation-combine}
 ### Evaluation
 final.estimates.sf <- area$area.sf %>% 
-  left_join(VOR.tower.est, by = "tile.id.chr") %>%
-  left_join(VOR.offset.est, by = "tile.id.chr") %>%
-  left_join(VOR.barycenter.est, by = "tile.id.chr") %>%
-  mutate(u.flat = mean(pop)) %>% 
-  arrange(tile.id.num) %>%
-  bind_cols(MLE.est) %>% 
-  bind_cols(DF.est)
+  left_join(VOR.tower.both, by = "tile.id.chr") %>%
+  left_join(VOR.offset.both, by = "tile.id.chr") %>%
+  left_join(VOR.barycenter.both, by = "tile.id.chr")
+  # mutate(u.flat = mean(pop)) %>% 
+  # arrange(tile.id.num) %>%
+  # bind_cols(MLE.est) %>% 
+  # bind_cols(DF.est)
 
 saveRDS(final.estimates.sf, "workflow_objects/final.estimates.sf.rds")
 
@@ -731,14 +822,14 @@ paste("KWD runtime ( L =", L, "):", round(kwd.final$runtime / 60, 0), "min for",
 # Define names for estimators
 names.weights <- colnames(weights)[-1]
 
-order.mismatch <- str_replace(mismatch.versions, paste0(names(tower.dist.list), "."), "")
+order.mismatch <- str_replace(mismatch.versions, paste0(names(gen.model.objects$C.vec.df.list), "."), "")
 
 
 # Develop data frame on the estimtor level with respective KWD values
 kwd.eval <- tibble(estimator = names.weights,
                    kwd = kwd.final$distance * 1) %>%  # rescaling according to scale
   mutate(kwd.lower.bound = kwd - ((kwd / 100) * 2.68)) %>%  # for L=3 within 1 percent 
-  mutate(network.kind = str_extract(estimator, pattern = paste0(names(tower.dist.list), collapse = "|"))) %>% 
+  mutate(network.kind = str_extract(estimator, pattern = paste0(names(gen.model.objects$C.vec.df.list), collapse = "|"))) %>% 
   mutate(iteration = str_extract(estimator, "[[:digit:]]+$")) %>% 
   mutate(version = case_when(str_detect(estimator, "true") ~ "true",
                              TRUE ~ str_extract(estimator, 
