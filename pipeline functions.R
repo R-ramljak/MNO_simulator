@@ -1502,7 +1502,6 @@ c.vec.sampler <- function(x) {
 create_c_vector <- function(signal.strength.llh.combined) {
   
   # covered only by one tile
-  C.vec.fixed.helper <- signal.strength.llh.combined %>% 
     filter(coverage.kind == "covered completely by one antenna") %>%
     dplyr::select(tile.id.num, cell, pop)
   
@@ -1571,13 +1570,14 @@ create_strength_llh_custom <- function(signal.strength.comb.dt,
 }
 
 
-create_supertile_index <- function(P.long.df, elements = c("tile.id.chr", "cell.chr", "pij", "a")){
+create_supertile_index <- function(P.long.df, elements){
   
   
-  # P.long.df <- P.long.noise.df$cellplan.1.layer.1.no_03
-  
-  P.dt <- as.data.table(P.long.df) %>% 
+  P.dt <- P.long.noise.df$cellplan.3.layer.no_true %>% 
+    rename(prior = !!as.name(prior.var)) %>% 
+    as.data.table(.) %>% 
     .[, order.var := factor(.I)]
+  
   
   dat <- P.dt %>% 
     .[, ..elements] %>% 
@@ -1585,10 +1585,10 @@ create_supertile_index <- function(P.long.df, elements = c("tile.id.chr", "cell.
     setorder(., cell.chr) %>%
     .[, cell.comp := paste0(cell.chr, collapse = ""), by = tile.id.chr] %>%
     .[, pij.comp := paste0(pij, collapse = ""), by = tile.id.chr] %>%
-    .[, supertile.id := .GRP, by = .(cell.comp, pij.comp, a)]
+    .[, supertile.id := .GRP, by = .(cell.comp, pij.comp, prior)]
   
   final <- P.dt[dat, on = c("tile.id.chr", "cell.chr")] %>%
-    setorder(., order.var) %>% 
+    setorder(., order.var) %>%
     .[, supertile.id]
   
   return(final)
