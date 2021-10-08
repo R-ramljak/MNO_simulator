@@ -1573,7 +1573,7 @@ create_strength_llh_custom <- function(signal.strength.comb.dt,
 create_supertile_index <- function(P.long.df, elements){
   
   
-  P.dt <- P.long.noise.df$cellplan.3.layer.no_true %>% 
+  P.dt <- P.long.df %>% 
     rename(prior = !!as.name(prior.var)) %>% 
     as.data.table(.) %>% 
     .[, order.var := factor(.I)]
@@ -1633,6 +1633,96 @@ con_llh_sens_custom <- function(strength, L.kind, digits) {
   # .[os <= max_overlapping_cells, `:=`(pag, s/sum(s)), by = rid]
   
   final <- e$pag.rounded
+  
+  return(final)
+  
+}
+
+EM_est_supertiles <- function(area, c.vec.dt, P.dt, prior.var = "prior.uninformative", n.iter, selected.range, ldt.dt, message = T) {
+  
+  elements <- c("tile.id.chr", "cell.chr", "pij", "prior")
+  
+  P.dt.supertiles <- P.dt %>% 
+    mutate(supertile.id = create_supertile_index(., elements = elements)) %>%
+    mutate(supertile.id.chr = as.numeric(supertile.id)) %>%
+    mutate(supertile.id.fac = factor(supertile.id.chr)) %>%
+    mutate(supertile.id.num = as.numeric(supertile.id)) %>%
+    dplyr::select(-supertile.id) %>%
+    as.data.table()
+  
+  P.dt.star <- P.dt.supertiles %>% 
+    dplyr::select(i = cell.num, j = contains("supertile.id.num"), pij)
+  
+  
+  supertile.joiner.prior <- P.dt.supertiles %>%
+    right_join(area$area.df, by = c("tile.id.num", "tile.id.fac", "tile.id.chr", prior.var)) %>% # to assure that uncovered tiles are also included
+    dplyr::select(tile.id.num, !!as.name(prior.var), contains("supertile.id.num")) %>%
+    distinct() %>%
+    arrange(tile.id.num)
+  
+  
+  supertile.joiner <- supertile.joiner.prior %>%
+    dplyr::select(tile.id.num, contains("supertile.id.num"))
+  
+  
+  a.tile.helper <- supertile.joiner.prior %>%
+    dplyr::select(contains("supertile.id.num"), !!as.name(prior.var)) %>%
+    group_by(across(contains("supertile.id.num"))) %>%
+    summarise(a = sum(!!as.name(prior.var))) %>% # uniform vector of number of normal tiles
+    drop_na()# uncovered tiles
+  
+  a.tile.vec <- a.tile.helper %>%
+    deframe()
+  
+  a.vec.dt <- a.tile.helper %>%
+    dplyr::select(j = contains("supertile.id.num"), u = a) %>%
+    as.data.table(.)
+  
+  
+  cdt <- c.vec.dt
+  pij <- cdt[P.dt.star, on = "i"]
+  pij <- pij[c > 0] # remove those lines where c==0 because it will create 0 division
+  # adt <- data.table(a = a.vec)
+  # tiles <- adt[, .(j = 1:.N, u = a)]
+  tiles <- a.vec.dt
+  keep <- a.vec.dt # base dataframe for the selected iterations
+  
+  for(m in 1:(n.iter)){
+    
+    if(message == T) {
+      cat(format(Sys.time()), paste0("---- calculating u", m), "----\n")
+    }
+    
+    cols <- c("j", paste0("u"))
+    ju <- tiles[, cols, with = F]
+    setnames(ju, c("j", "u"))
+    pij <- ju[pij, on = "j"]
+    denom <- pij[, .(sum_pik_uk = sum(u * pij)), by = i]
+    pij <- denom[pij, on = "i"]
+    faktor <- pij[, .(f = sum(c * pij / sum_pik_uk)), by = j]
+    faktor.adj <- faktor[, f := fifelse(test = {is.na(f) | is.nan(f) | is.infinite(f)}, 1, f)] # if else to assure that the posterior is 1 to secure the same estimand value after ldt
+    pij[, c("u", "sum_pik_uk") := NULL]
+    tiles <- faktor.adj[tiles, on = "j"]
+    # tiles <- eval(parse(text = paste0("tiles[, u := u * f]")))
+    tiles <- eval(parse(text = paste0("tiles[,  u := fifelse(u * f < ldt.dt, 0, u * f)]")))
+    tiles[, "f" := NULL]
+    
+    if(m %in% selected.range) {
+      keep <- tiles[keep, on = "j"]
+      keep <- eval(parse(text = paste0("keep[, u_", m, ":= u]")))
+      keep[, "u" := NULL]
+    }
+  }
+  
+  final <- keep %>% 
+    rename(supertile.id.num = j) %>% 
+    right_join(supertile.joiner, by = "supertile.id.num") %>% 
+    group_by(across(contains("supertile.id.num"))) %>% 
+    mutate(across(starts_with("u_"), ~ . / n())) %>%
+    ungroup() %>%
+    dplyr::select(tile.id.num, prior = i.u, starts_with("u_")) %>%
+    mutate(across(starts_with("u_"), ~if_else(is.na(.), 0, .)))
+  
   
   return(final)
   
