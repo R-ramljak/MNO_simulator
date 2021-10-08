@@ -1570,7 +1570,7 @@ create_strength_llh_custom <- function(signal.strength.comb.dt,
 }
 
 
-create_supertile_index <- function(P.long.df, elements){
+create_supertile_index <- function(P.long.df, elements, prior.var){
   
   
   P.dt <- P.long.df %>% 
@@ -1638,12 +1638,12 @@ con_llh_sens_custom <- function(strength, L.kind, digits) {
   
 }
 
-EM_est_supertiles <- function(area, c.vec.dt, P.dt, prior.var = "prior.uninformative", n.iter, selected.range, ldt.dt, message = T) {
+EM_est_supertiles <- function(area, c.vec.dt, P.dt, prior.var, n.iter, selected.range, ldt.dt, message = T) {
   
   elements <- c("tile.id.chr", "cell.chr", "pij", "prior")
   
   P.dt.supertiles <- P.dt %>% 
-    mutate(supertile.id = create_supertile_index(., elements = elements)) %>%
+    mutate(supertile.id = create_supertile_index(., elements = elements, prior.var = prior.var)) %>%
     mutate(supertile.id.chr = as.numeric(supertile.id)) %>%
     mutate(supertile.id.fac = factor(supertile.id.chr)) %>%
     mutate(supertile.id.num = as.numeric(supertile.id)) %>%
@@ -1651,7 +1651,8 @@ EM_est_supertiles <- function(area, c.vec.dt, P.dt, prior.var = "prior.uninforma
     as.data.table()
   
   P.dt.star <- P.dt.supertiles %>% 
-    dplyr::select(i = cell.num, j = contains("supertile.id.num"), pij)
+    dplyr::select(i = cell.num, j = contains("supertile.id.num"), pij) %>% 
+    as.data.table()
   
   
   supertile.joiner.prior <- P.dt.supertiles %>%
@@ -1727,3 +1728,122 @@ EM_est_supertiles <- function(area, c.vec.dt, P.dt, prior.var = "prior.uninforma
   return(final)
   
 }
+
+
+
+DF_est_relaxed_iter_supertiles <- function(area, c.vec.dt, P.dt, prior.var = "prior.uninformative", n.iter, selected.range, ldt.dt, message = T){
+  
+  
+  elements <- c("tile.id.chr", "cell.chr", "pij", "prior")
+  
+  P.dt.supertiles <- P.dt %>% 
+    mutate(supertile.id = create_supertile_index(., elements = elements, prior.var = prior.var)) %>%
+    mutate(supertile.id.chr = as.numeric(supertile.id)) %>%
+    mutate(supertile.id.fac = factor(supertile.id.chr)) %>%
+    mutate(supertile.id.num = as.numeric(supertile.id)) %>%
+    dplyr::select(-supertile.id) %>%
+    as.data.table()
+  
+  P.dt.star <- P.dt.supertiles %>% 
+    dplyr::select(i = cell.num, j = contains("supertile.id.num"), pij) %>% 
+    as.data.table()
+  
+  
+  supertile.joiner.prior <- P.dt.supertiles %>%
+    right_join(area$area.df, by = c("tile.id.num", "tile.id.fac", "tile.id.chr", prior.var)) %>% # to assure that uncovered tiles are also included
+    dplyr::select(tile.id.num, !!as.name(prior.var), contains("supertile.id.num")) %>%
+    distinct() %>%
+    arrange(tile.id.num)
+  
+  
+  supertile.joiner <- supertile.joiner.prior %>%
+    dplyr::select(tile.id.num, contains("supertile.id.num"))
+  
+  
+  a.tile.helper <- supertile.joiner.prior %>%
+    dplyr::select(contains("supertile.id.num"), !!as.name(prior.var)) %>%
+    group_by(across(contains("supertile.id.num"))) %>%
+    summarise(a = sum(!!as.name(prior.var))) %>% # uniform vector of number of normal tiles
+    drop_na()# uncovered tiles
+  
+  a.tile.vec <- a.tile.helper %>%
+    deframe()
+  
+  names.tile.vec <- a.tile.vec %>% 
+    names(.) %>% as.numeric(.)
+
+  
+  P.star.spm.helper <- P.dt.supertiles %>%
+    dplyr::select(i = cell.num, j = contains("supertile.id.num"), x = pij)
+  P.star.spm <- sparseMatrix(i = P.star.spm.helper$i, j = P.star.spm.helper$j, x = P.star.spm.helper$x)
+  c.vec <- c(c.vec.dt)$c
+  A.spm <- .sparseDiagonal(n = length(a.tile.vec), x = a.tile.vec)
+  
+  Y <- P.star.spm %*% A.spm %*% t(P.star.spm) 
+  Y1 <- VCA::MPinv(Y) %*% (c.vec - P.star.spm %*% a.tile.vec)
+  u <- as.vector(A.spm %*% t(P.star.spm) %*% Y1 + a.tile.vec)
+  
+  # DF raw estimate
+  u.pos.dt <- data.table(j = names.tile.vec, u = u) %>% 
+    .[, u := fifelse(u < 1, 1, u)]
+  
+  
+  cdt <- c.vec.dt
+  pij <- cdt[P.dt.star, on = "i"]
+  pij <- pij[c > 0] # remove those lines where c==0 because it will create 0 division
+  # adt <- data.table(a = a.vec)
+  # tiles <- adt[, .(j = 1:.N, u = a)]
+  tiles <- u.pos.dt
+  keep <- u.pos.dt # base dataframe for the selected iterations
+  
+  for(m in 1:(n.iter)){
+    
+    if(message == T) {
+      cat(format(Sys.time()), paste0("---- calculating u", m), "----\n")
+    }
+    
+    cols <- c("j", paste0("u"))
+    ju <- tiles[, cols, with = F]
+    setnames(ju, c("j", "u"))
+    pij <- ju[pij, on = "j"]
+    denom <- pij[, .(sum_pik_uk = sum(u * pij)), by = i]
+    pij <- denom[pij, on = "i"]
+    faktor <- pij[, .(f = sum(c * pij / sum_pik_uk)), by = j]
+    faktor.adj <- faktor[, f := fifelse(test = {is.na(f) | is.nan(f) | is.infinite(f)}, 1, f)] # if else to assure that the posterior is 1 to secure the same estimand value after ldt
+    pij[, c("u", "sum_pik_uk") := NULL]
+    tiles <- faktor.adj[tiles, on = "j"]
+    # tiles <- eval(parse(text = paste0("tiles[, u := u * f]")))
+    tiles <- eval(parse(text = paste0("tiles[,  u := fifelse(u * f < ldt.dt, 0, u * f)]")))
+    tiles[, "f" := NULL]
+    
+    if(m %in% selected.range) {
+      keep <- tiles[keep, on = "j"]
+      keep <- eval(parse(text = paste0("keep[, u_", m, ":= u]")))
+      keep[, "u" := NULL]
+    }
+  }
+  
+  final <- keep %>% 
+    rename(supertile.id.num = j) %>% 
+    right_join(supertile.joiner, by = "supertile.id.num") %>% 
+    group_by(across(contains("supertile.id.num"))) %>% 
+    mutate(across(starts_with("u_"), ~ . / n())) %>%
+    ungroup() %>%
+    dplyr::select(tile.id.num, prior = i.u, starts_with("u_")) %>%
+    mutate(across(starts_with("u_"), ~if_else(is.na(.), 0, .)))
+  
+  
+  return(final)
+
+}
+
+e <- DF_est_relaxed_iter_supertiles(area = area,
+                                    c.vec.dt = c.vec.dt$cellplan.3.layer, 
+                                    P.dt = P.long.noise.df$cellplan.3.layer.no_true, 
+                                    prior.var = "prior.uninformative",
+                                    selected.range = c(1, 5, 10),
+                                    n.iter = 10,
+                                    message = T, 
+                                    ldt.dt = 10^-04)
+
+
