@@ -1502,6 +1502,7 @@ c.vec.sampler <- function(x) {
 create_c_vector <- function(signal.strength.llh.combined) {
   
   # covered only by one tile
+  C.vec.fixed.helper <- signal.strength.llh.combined %>% 
     filter(coverage.kind == "covered completely by one antenna") %>%
     dplyr::select(tile.id.num, cell, pop)
   
@@ -1837,13 +1838,6 @@ DF_est_relaxed_iter_supertiles <- function(area, c.vec.dt, P.dt, prior.var = "pr
 
 }
 
-e <- DF_est_relaxed_iter_supertiles(area = area,
-                                    c.vec.dt = c.vec.dt$cellplan.3.layer, 
-                                    P.dt = P.long.noise.df$cellplan.3.layer.no_true, 
-                                    prior.var = "prior.uninformative",
-                                    selected.range = c(1, 5, 10),
-                                    n.iter = 10,
-                                    message = T, 
-                                    ldt.dt = 10^-04)
+
 
 
