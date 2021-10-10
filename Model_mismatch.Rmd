@@ -64,7 +64,7 @@ gen.model.objects <- readRDS("workflow_objects/gen.model.objects.rds")
 ```{r noise-implementation}
 # define the number of bits --> final number of levels are 2^n + 1
 noise.expression <- c(no.03 = "runif(min = -3, max = 3",
-                      # no.06 = "runif(min = -6, max = 6",
+                      no.06 = "runif(min = -6, max = 6",
                       # no.09 = "runif(min = -9, max = 9",
                       # no.12 = "runif(min = -12, max = 12",
                       # no.15 = "runif(min = -15, max = 15",
@@ -158,7 +158,7 @@ dense.names.noise <- names(P.long.noise.complete.df) %>%
 ```{r}
 # noise on the signal dominance scale
 
-(dom.plot.ME <- P.long.noise.df.s %>% 
+(dom.plot.ME <- P.long.noise.df %>% 
    magrittr::extract(dense.names.noise) %>% 
   map_dfr(~dplyr::select(., cell, cell.kind, tile.id.num, s.mismatch.mag, noise.level)) %>% 
   filter(cell == ("ME.100.C.2")) %>% 
@@ -187,13 +187,13 @@ ggsave("workflow_objects/noise.dom.plot.ME.png", dom.plot.ME, device = "png")
 # define the number of bits --> final number of levels are 2^n + 1
 
 quant.levels <- c(
-  # quant.00 = 0,
-  # quant.01 = 1,
+  quant.00 = 0,
+  quant.01 = 1,
   # quant.02 = 2,
   # quant.03 = 3,
   # quant.04 = 4,
   # quant.05 = 5,
-  quant.10 = 10,
+  # quant.10 = 10,
   quant.true = 0) # last version is just a placeholder, the "0" is meaningless
 
 quant.levels.wo.true <- names(quant.levels)[!names(quant.levels) == ("quant.true")]
@@ -289,48 +289,48 @@ dense.names.quant <- names(P.long.quant.complete.df) %>%
 ggsave("workflow_objects/quant.dom.plot.ME.w.th.png", dom.plot.ME.th, device = "png")
 ```
 
-```{r}
-cell.kind.unique <- n_distinct(param.df$cell.kind)
-range.total <- rep(seq(10, 20000, by = 10), cell.kind.unique)
-length.range.total <- rep(length(range.total) / cell.kind.unique, cell.kind.unique)
+<!-- ```{r} -->
+<!-- cell.kind.unique <- n_distinct(param.df$cell.kind) -->
+<!-- range.total <- rep(seq(10, 20000, by = 10), cell.kind.unique) -->
+<!-- length.range.total <- rep(length(range.total) / cell.kind.unique, cell.kind.unique) -->
 
-# use the helpers to construct plot dataframe and join with the input params
-df <- tibble(cell.kind = factor(rep(param.df$cell.kind, length.range.total)),
-             distance = range.total) %>% 
-  left_join(param.df, by = "cell.kind") %>% 
-  mutate(dBm = W2dBm(W)) %>% 
-  mutate(distance.log10 = log10(distance)) %>% 
-  mutate(dBm = distance2dB(distance, ple, W)) %>% 
-  mutate(s = db2s(dBm, 
-                  midpoint = midpoint, 
-                  steepness = steepness))
+<!-- # use the helpers to construct plot dataframe and join with the input params -->
+<!-- df <- tibble(cell.kind = factor(rep(param.df$cell.kind, length.range.total)), -->
+<!--              distance = range.total) %>%  -->
+<!--   left_join(param.df, by = "cell.kind") %>%  -->
+<!--   mutate(dBm = W2dBm(W)) %>%  -->
+<!--   mutate(distance.log10 = log10(distance)) %>%  -->
+<!--   mutate(dBm = distance2dB(distance, ple, W)) %>%  -->
+<!--   mutate(s = db2s(dBm,  -->
+<!--                   midpoint = midpoint,  -->
+<!--                   steepness = steepness)) -->
 
-### theoretical quantization vs true
-new.df.theo.vars <- quant.levels %>% 
-  map(~quant_mutate(df = df, n = .x)) %>% 
-  map_at(quant.levels.only.true, ~mutate(., s.quant.true = s)) %>% 
-  map_at(quant.levels.only.true, ~dplyr::select(., -s.quant.0)) %>% 
-  map2(., names(quant.levels), ~rename(.x, !!.y := starts_with("s.quant."))) %>% 
-  map_at(quant.levels.wo.true, ~dplyr::select(., starts_with("quant_"))) %>%
-  bind_cols() %>% 
-  pivot_longer(cols = starts_with("quant_"), names_to = "quant.level", values_to = "quant.mag") %>% 
-  mutate(below.dominance.th = case_when(quant.mag >= 0.05 ~ "Above", 
-                                        quant.mag < 0.05 ~ "Below"))
+<!-- ### theoretical quantization vs true -->
+<!-- new.df.theo.vars <- quant.levels %>%  -->
+<!--   map(~quant_mutate(df = df, n = .x)) %>%  -->
+<!--   map_at(quant.levels.only.true, ~mutate(., s.quant.true = s)) %>%  -->
+<!--   map_at(quant.levels.only.true, ~dplyr::select(., -s.quant.0)) %>%  -->
+<!--   map2(., names(quant.levels), ~rename(.x, !!.y := starts_with("s.quant."))) %>%  -->
+<!--   map_at(quant.levels.wo.true, ~dplyr::select(., starts_with("quant_"))) %>% -->
+<!--   bind_cols() %>%  -->
+<!--   pivot_longer(cols = starts_with("quant_"), names_to = "quant.level", values_to = "quant.mag") %>%  -->
+<!--   mutate(below.dominance.th = case_when(quant.mag >= 0.05 ~ "Above",  -->
+<!--                                         quant.mag < 0.05 ~ "Below")) -->
 
 
-(theo.quant.plot <- new.df.theo.vars %>% 
-  # filter(quant.level == "quant_true") %>% 
-  ggplot() +
-  # geom_point(aes(x = s, y = quant.mag, color = quant.level, group = quant.level))
-  geom_line(aes(x = s, y = quant.mag, 
-                color = quant.level), 
-            size = 1) +
-  facet_wrap(vars(quant.level), ncol = 3) +
-  labs(x = "True signal dominance", 
-       y = "Quantized signal dominance",
-       color = "Quant. Version"))
-ggsave("workflow_objects/theo.quant.plot.png", theo.quant.plot, device = "png")
-```
+<!-- (theo.quant.plot <- new.df.theo.vars %>%  -->
+<!--   # filter(quant.level == "quant_true") %>%  -->
+<!--   ggplot() + -->
+<!--   # geom_point(aes(x = s, y = quant.mag, color = quant.level, group = quant.level)) -->
+<!--   geom_line(aes(x = s, y = quant.mag,  -->
+<!--                 color = quant.level),  -->
+<!--             size = 1) + -->
+<!--   facet_wrap(vars(quant.level), ncol = 3) + -->
+<!--   labs(x = "True signal dominance",  -->
+<!--        y = "Quantized signal dominance", -->
+<!--        color = "Quant. Version")) -->
+<!-- ggsave("workflow_objects/theo.quant.plot.png", theo.quant.plot, device = "png") -->
+<!-- ``` -->
 
 ## Estimation 
 
@@ -375,7 +375,7 @@ P.long.mismatch.parameter.list <- P.long.mismatch.complete %>%
 # c.vec
 c.vec.parameter.list <- c.vec %>%
   map(~data.table(i = .x$cell.num, c = .x$phones.sum)) %>% 
-  rep(length(mismatch.versions)) %>% 
+  rep(length(P.long.names) * n.prior) %>% 
   .[order(names(.))] # order alphabetically as above
 
 # prior name
@@ -524,8 +524,8 @@ MLE.est <- pmap(prob.est.input.list,
                                     c.vec.dt = ..1, 
                                     P.dt = ..2, 
                                     prior.var = ..3,
-                                    selected.range = c(1, 2),
-                                    n.iter = 2,
+                                    selected.range = c(1, 5, 10, 100, 200),
+                                    n.iter = n.iter.MLE,
                                     message = T, 
                                     ldt.dt = 10^-04)) %>% 
   map(~arrange(., tile.id.num)) %>% 
@@ -548,8 +548,8 @@ DF.est <- pmap(prob.est.input.list,
                                                 c.vec.dt = ..1, 
                                                 P.dt = ..2, 
                                                 prior.var = ..3,
-                                                selected.range = c(1, 2),
-                                                n.iter = 2,
+                                                selected.range = c(1, 5, 10, 100, 200),
+                                                n.iter = n.iter.MLE,
                                                 message = T, 
                                                 ldt.dt = 10^-04)) %>% 
   map(~arrange(., tile.id.num)) %>% 
@@ -570,7 +570,7 @@ final.estimates.sf <- area$area.sf %>%
   left_join(VOR.barycenter.est, by = "tile.id.chr") %>%
   left_join(MLE.est, by = "tile.id.num") %>%
   left_join(DF.est, by = "tile.id.num") %>%
-  arrange(tile.id.num)
+  arrange(tile.id.num) %>% 
   group_by(prior.2) %>%
   mutate(u.grouped.flat = mean(pop)) %>%
   ungroup() %>%
@@ -640,7 +640,7 @@ weights <- kwd.helper.est %>%
 
 
 # Approximation parameter (the higher the more accurate)
-L = 3
+L = 2
 
 # Run KWD
 kwd.final <- compareOneToMany(coordinates, weights, L = L, recode = TRUE)
