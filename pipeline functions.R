@@ -292,7 +292,8 @@ complete_cellplan_gen <- function(area, layer.params.ext, param.df) {
     group_by(tile.id.chr) %>%
     mutate(max.dBm = max(dBm),
            max.s = max(s),
-           min.dist = min(dist)) %>%
+           min.dist = min(dist),
+           count = n()) %>%
     ungroup()
   
   # identify the cell-tile relations with maximum signal dominance and identify tiles that are not covered sufficiently
@@ -965,12 +966,12 @@ map_density <- function(data, var, label, pointsize = 1.9, pixels = c(900, 900))
     coord_sf() +
     theme_minimal() +
     theme(
-          legend.position = "none",
+          legend.position = "bottom",
           axis.text.x = element_blank(),
           axis.text.y = element_blank(),
           axis.ticks.x = element_blank(),
           axis.ticks.y = element_blank(),
-          text = element_text(size = 20),
+          # text = element_text(size = 20),
           plot.background=element_rect(fill="transparent", colour=NA),
           rect = element_rect(fill = "transparent"),
           plot.margin=grid::unit(c(0,0,0,0), "mm")) +
@@ -1653,6 +1654,7 @@ EM_est_supertiles <- function(area, c.vec.dt, P.dt, prior.var, n.iter, selected.
   
   P.dt.star <- P.dt.supertiles %>% 
     dplyr::select(i = cell.num, j = contains("supertile.id.num"), pij) %>% 
+    distinct() %>% 
     as.data.table()
   
   
@@ -1747,6 +1749,7 @@ DF_est_relaxed_iter_supertiles <- function(area, c.vec.dt, P.dt, prior.var = "pr
   
   P.dt.star <- P.dt.supertiles %>% 
     dplyr::select(i = cell.num, j = contains("supertile.id.num"), pij) %>% 
+    distinct() %>% 
     as.data.table()
   
   
