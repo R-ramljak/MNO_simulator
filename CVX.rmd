@@ -1,0 +1,749 @@
+---
+title: "MNO spatial density estimation and uncertainty through convex optimization"
+author: "Marco Ramljak and Fabio Ricciato"
+date: "`r Sys.Date()`"
+output:
+  bookdown::html_document2:
+    code_folding: show
+    code_download: true
+    theme: sandstone
+    toc: true
+    toc_float: true
+    number_sections: true
+    fig_caption: yes
+---
+
+# Introduction
+
+This notebook accompanies the working paper from Fabio Ricciato and Marco Ramljak and showcases simulation results and operationalization within R. We focus on two probabilistic estimation methods within the static framework: the MLE and the MAP estimator (MAP to be implemented). ... uncertainty measure...
+
+Current research approximates the MLE estimator in an iterative fashion by utilizing the EM-algorithm. Even though this method is quite fast in small toyworlds, in practice, this iterative process is expected to be quite lengthy. Furthermore, under severe model mismatch (quantization), the EM-algorithm may not converge. Therefore, it is of interest to scrutinize different methods to approximate/estimate the ML estimate. In [Ricciato and Coluccia] the authors derive the exact form of the MLE estimator, which represents a constrained non-linear optimization problem. In this notebook we operationalize this optimization problem through the cvx framework within R. The cvx framework is an excellent tool for experimental research on optimization because it provides access to multiple commercial and open-source solvers, helps with reformulating the problem in the necessary standard form and offers the flexibility to easily change and tweak and optimization problem (e.g., adding new constraints). Furthermore, next to R it is available across multiple popular coding environments such as Python, Julia and Matlab.
+
+To develop our simulations we use a shortened form of the handy MNOsimulator workflow within R: Generation, Estimation, Evaluation.
+
+```{r packages, message=FALSE}
+# Data manipulation
+library(tidyverse)
+library(data.table) 
+
+# Spatial operations
+library(sf)
+library(raster)
+library(stars)
+
+# Matrix operations
+library(Matrix)
+
+# MNO data handling and propagation model setup
+# Credits to Prof. Martijn Tennekes https://github.com/mtennekes/mobloc
+library(mobloc)
+
+# Comparison of 2d histograms (Kantorovitch Wasserstein distance a.k.a. Earth Movers distance)
+# Credits to Prof. Stefano Gualandi https://cran.r-project.org/web/packages/SpatialKWD/SpatialKWD.pdf
+library(SpatialKWD)
+
+# Convex Optimization for estimators
+library(CVXR)
+
+# Output organisation and plotting support
+library(ggthemes)
+library(viridis)
+library(ggrepel)
+library(ggpointdensity)
+library(scattermore)
+library(grid)
+library(gridExtra)
+library(knitr)
+library(DT)
+
+# seed for reproducibility
+set.seed(4)
+
+
+# Loading Custom functions
+source("pipeline functions.R")
+```
+
+For our experiments we use an already developed toyworld, which can be explored in detail [here](https://r-ramljak.github.io/MNO_mobdensity/). Therefore, we skip the *Generation* step and load in only the objects we need for the *Estimation* step. These are the true P-matrix on the supertile level, the c-vector and the reference area object.
+
+```{r load, message=FALSE}
+# Load toyworld objects
+P.mat.raw <- readRDS("C:/Users/Marco/Desktop/Methoden/R/RProjetcs/Master UU/Thesis MNO/MNO_simulator/CVXR/P.star.supertile.spm.rds")
+P.star.supertile.dt <- readRDS("C:/Users/Marco/Desktop/Methoden/R/RProjetcs/Master UU/Thesis MNO/MNO_simulator/CVXR/P.star.supertile.dt.rds")
+c.vec.dt <- readRDS("C:/Users/Marco/Desktop/Methoden/R/RProjetcs/Master UU/Thesis MNO/MNO_simulator/CVXR/c.vec.dt.rds")
+a.vec.raw <- readRDS("C:/Users/Marco/Desktop/Methoden/R/RProjetcs/Master UU/Thesis MNO/MNO_simulator/CVXR/a.supertile.helper.rds")
+area <- readRDS("C:/Users/Marco/Desktop/Methoden/R/RProjetcs/Master UU/Thesis MNO/MNO_simulator/CVXR/area.rds")
+
+```
+
+# Estimation
+
+## Estimation: MLE via EM
+
+Past applications have used the EM-algorithm to approximate the ML estimate. It was shown that multiple iterations (more than 10) are needed for the solution to converge, in terms of KWD. In the following example we apply 200 iterations.
+
+```{r MLE-EM-estimator}
+## Preparation of parameter objects
+# Supertile prior
+a.supertile.dt <- data.table(j = as.numeric(names(a.vec.raw)),
+                             u = a.vec.raw) 
+  
+# define number of iterations 
+n.iter.MLE <- 200
+
+# Time log
+MLE.EM.time <- system.time({
+  # calculate MLE/EM estimator
+  MLE.est.first <- EM_est(c.vec.dt = c.vec.dt, 
+                    P.dt = P.star.supertile.dt, 
+                    a.vec.dt = a.supertile.dt, 
+                    selected.range = c(1, 10, 100, 200),
+                    n.iter = n.iter.MLE,
+                    message = F, 
+                    ldt = 10^-04)
+})
+  MLE.est <- MLE.est.first %>% 
+    rename_with(.fn = ~gsub("u", "u.MLE", x = .x, fixed = T), 
+                .cols = starts_with("u")) %>% 
+    rename(supertile.id.num = j, prior.MLE = i.u) %>% 
+    right_join(area$area.df.complete, by = "supertile.id.num") %>% 
+    group_by(supertile.id) %>% 
+    mutate(across(starts_with("u"), ~ . / n())) %>% 
+    ungroup() %>% 
+    dplyr::select(tile.id, starts_with("u"))
+
+
+```
+
+## Estimation: MLE via convex optimization
+
+Within the cvx framework, we specify our decision variables $u$, and objective function and the required constraints. Initial exploration showed, that the commercial MOSEK solver is the only one of the available solvers that can handle this large problem. Further exploration needs to scrutinize the scaling ability of this workflow and solver.
+
+The optimization problem is the following:
+
+arg max $\hat{u}_{MLE}
+
+ = c^T logPu$ subject to $1_{J}^T=C$ and $u\ge
+
+0$.
+
+The cvx framework provides us with many useful results and details: It states if the solver reached an optimal solution and the solving time. If an optimal solution was found, it returns the numeric vector of the decision variables, which represents the estimate. Furthermore, it returns the global maximum value, which in this case represents the likelihood.
+
+```{r MLE-opt-prep}
+## Preparation of parameter objects
+# P.matrix for supertiles
+P.mat <- P.mat.raw
+a.vec <- a.vec.raw
+
+# c.vector into one column matrix format and sum
+c.vec <- matrix(c(c.vec.dt$c), nrow = 1) 
+sum.c.vec <- sum(c.vec)
+
+# number of supertiles (--> number of decision variables)
+n.j <- length(a.vec)
+
+
+## CVXR routine
+# Specifying the decision variables
+u.mle.opt <- Variable(n.j)
+
+stand.c.vec <- t(c.vec[c.vec > 0]) %*% log(c.vec[c.vec > 0])
+
+# Objective function specification
+# objective.mle.opt <- Maximize(c.vec %*% log(P.mat %*% u.mle.opt))
+objective.mle.opt <- Maximize( (c.vec %*% log(P.mat %*% u.mle.opt) - stand.c.vec) / stand.c.vec ) # standardized
+
+# Constrains specification
+constraints.mle.opt <- list(
+  u.mle.opt >= 0, # u to be non-negative
+  # u.mle.opt <= 500, # u to be not greater than 500
+  sum(u.mle.opt) == sum.c.vec # the sum of u being equal to the sum of the c.vector
+)
+
+
+# Problem solution
+mle.opt.prob <- Problem(objective.mle.opt, constraints.mle.opt)
+MLE.opt.time <- system.time({
+  mle.opt.solution <- solve(mle.opt.prob, solver = "MOSEK")
+})
+paste("The solver has reached an", mle.opt.solution$status, "solution for the MLE_Opt estimator.")
+
+paste("The minimum of the estimated distribution is", round(min(mle.opt.solution$getValue(u.mle.opt)), digits = 3))
+
+
+paste("The sum of the estimated distribution is", sum(mle.opt.solution$getValue(u.mle.opt)), "and the sum of the true distribution is", sum(area$area.df$pop))
+```
+
+The resulted estimated distribution abides with the set constraints to an acceptable degree. Further exploration should focus on tweaking influential tolerance values because these tolerance values can lead to small deviations from the necessary constraints. This is visible for example in the minimal difference between the mass of the estimated distribution within the optimization problem and the ground truth distribution. For the evaluation module, the mass of the estimated and ground truth distributions need to be exactly equal, therefore, we need to apply some alignment procedure. We choose to run one single EM iteration with the estimated distribution as the initial value. To make sure that we have actually obtained the ML estimate with the numerical estimator from above we run multiple iterations to check later if the estimate actually improves. If we have indeed obtained the ML estimate, it should not improve with further iterations.
+
+```{r MLE-opt}
+# adjust raw DF estimate (clip)
+mle.opt.raw.estimate <- data.table(j = as.numeric(names(a.vec)),
+                                   u = mle.opt.solution$getValue(u.mle.opt)) %>% 
+  setnames("u.V1", "u")
+
+## Renormalizing with EM and bringing estimate on regular tile.id level
+CVXR.est <- EM_est(c.vec.dt = c.vec.dt, 
+                 P.dt = P.star.supertile.dt, 
+                 a.vec.dt = mle.opt.raw.estimate,
+                 selected.range = c(1, 10, 100, 200),
+                 n.iter = n.iter.MLE,
+                 message = F,
+                 ldt = 10^-04) %>% 
+  rename_with(.fn = ~gsub("u", "u.CVXR", x = .x, fixed = T), 
+              .cols = starts_with("u")) %>% 
+  rename(supertile.id.num = j, prior.CVXR = i.u) %>%
+  right_join(area$area.df.complete, by = "supertile.id.num") %>% 
+  group_by(supertile.id) %>% 
+  mutate(across(starts_with("u"), ~ . / n())) %>% 
+  ungroup() %>% 
+  dplyr::select(tile.id, starts_with("u"))
+
+
+# validity of kwd with poisson or extreme right tailed dist
+# include shape of dist --> maps and ecdf
+# include integer attribute
+# complete MAP estimator
+
+
+
+
+```
+
+This is the first new milestone in this exploration because we solved the MLE via a numerical procedure instead of the EM procedure. Time-wise the numerical procedure needs for this toyworld less than 10 seconds, whereas the EM procedure has a fixed time of around 5 seconds and an additional second for every iteration.
+
+Later on, we will further evaluate the quality of both estimations.
+
+## Estimation: Uncertainty measure via convex optimization
+
+To showcase our proposed uncertainty measure we define four so-called *focus regions* that are within the overall reference area. They differ in location, size and ground truth population density. It is still an open research task, which potential effect these three and also other parameters have on the performance of this uncertainty measure. However, in this first exploration, we focus on the initial and actual operationalization.
+
+A focus region is defined through a binary variable on the tile level that indicates its membership regarding the focus region. For each focus region we add its respective membership variable to the area object. The following plots visualize these focus regions and their characteristics.
+
+```{r focus-region}
+
+set.seed(2139)
+
+# confidence interval
+size <- c("focus.region.1" = 2000, 
+          "focus.region.2" = 4000, 
+          "focus.region.3" = 7000, 
+          "focus.region.4" = 10000)
+
+
+focus.region.list <- st_sample(area$area.sf.complete, size = length(size)) %>%
+  map2(., size, ~st_buffer(.x, dist = .y, endCapStyle = "SQUARE")) 
+
+
+
+# Marking the tiles that belong to the focus region
+focus.region.sf.list <- rep(list(area$area.sf.complete), length(size)) %>% 
+  map2(focus.region.list, ~mutate(.x, focus.region = lengths(st_within(area$area.sf.complete, .y)))) %>% 
+  set_names(names(size)) 
+
+# Generate focus region vector
+focus.region.vec.ls <- focus.region.sf.list %>% 
+  map(st_drop_geometry) %>% 
+  map(~filter(., focus.region == 1)) %>% 
+  map(~dplyr::select(., supertile.id.num)) %>% 
+  map(deframe)
+
+# Generate focus region binary vector (v)
+focus.region.binary.vec.ls <- focus.region.sf.list %>% 
+  map(st_drop_geometry) %>% 
+  map(~distinct(., supertile.id.num, .keep_all = T)) %>% 
+  map(~arrange(., supertile.id.num)) %>% 
+  map(~dplyr::select(., focus.region)) %>% 
+  map(deframe) %>% 
+  map(~as.matrix(.)) 
+
+
+# Plotting the focus area
+focus.region.plot.data <- focus.region.sf.list %>% 
+  map(~group_by(., focus.region)) %>% 
+  map(~mutate(., focus.region.size = sum(focus.region))) %>%
+  map(~mutate(., focus.region.pop = case_when(focus.region == 1 ~ sum(pop),
+                                              TRUE ~ NA_real_))) %>% 
+  map_dfr(st_drop_geometry, .id = "focus.region.key")
+
+focus.region.helper <- focus.region.plot.data %>% 
+  filter(focus.region == 1) %>% 
+  distinct(focus.region.key, .keep_all = T) %>% 
+  mutate(label = paste(focus.region.size, "regular tiles\nwith", focus.region.pop, "phones"))
+
+(focus.region.plot <- focus.region.plot.data %>% 
+  ggplot(aes(x = X.centroid, y = Y.centroid)) +
+  geom_scattermore(aes(color = factor(focus.region)), pointsize = 1.9, pixels = c(900, 900)) +
+  coord_sf() +
+  geom_text(data = focus.region.helper, aes(label = label), 
+            x = 4440000, y = 2780000) +
+  labs(x = "", y = "", color = "Focus region") +
+  # geom_sf(aes(fill = factor(focus.region)), color = "transparent") +
+  facet_wrap(vars(focus.region.key)) +
+  theme(axis.title.x = element_blank(),
+        axis.text.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.title.y = element_blank(),
+        axis.text.y = element_blank(),
+        axis.ticks.y = element_blank()))
+
+```
+
+... explain further process of uncertainty measure...
+
+```{r ci}
+
+# specifying the focus region mass based on the mle.opt
+r.mle.opt <- rep(list(mle.opt.raw.estimate), length(size)) %>% 
+  map2(., focus.region.vec.ls, ~filter(., j %in% .y)) %>% 
+  map(~summarise(., sum(u))) %>% 
+  map(deframe)
+
+# specifying the focus region mass based on the ground truth
+r.true <- rep(list(area$area.df.complete), length(size)) %>% 
+  map2(., focus.region.vec.ls, ~filter(., supertile.id.num %in% .y)) %>% 
+  map(~summarise(., sum(pop))) %>% 
+  map(deframe)
+
+# consitency check if the order of the binary vec is correct
+# w <- t(focus.region.binary.vec) %*% as.numeric(mle.opt.raw.estimate$u)
+
+
+# neighboring r* values
+r.range <- rep(list(tibble(experiment.key = seq(-10, 25, 0.2))), length(size)) %>%
+  map2(., r.mle.opt, ~mutate(.x, r.estimated = .y)) %>% 
+  map(~mutate(., experiment.value = r.estimated + (experiment.key * (r.estimated / 10)))) %>% 
+  set_names(names(size)) %>% 
+  map_dfr(~filter(., !experiment.value < 0), .id = "focus.region.key") %>% 
+  arrange(experiment.key)
+
+focus.region.binary.vec.ls.helper <- focus.region.binary.vec.ls %>% 
+  set_names(names(size)) %>% 
+  rep(., length(unique(r.range$experiment.key)))
+
+## CVXR routine
+# Specifying the decision variables
+u.mle.opt.fr <- Variable(n.j)
+
+stand.c.vec <- t(c.vec[c.vec > 0]) %*% log(c.vec[c.vec > 0])
+
+# Objective function specification
+# objective.mle.opt.fr <- Maximize(c.vec %*% log(P.mat %*% u.mle.opt.fr)) # original
+objective.mle.opt.fr <- Maximize( (c.vec %*% log(P.mat %*% u.mle.opt.fr) - stand.c.vec) / stand.c.vec ) # standardized
+
+# Constrains specification
+constraints.mle.opt.fr.list <- map2(focus.region.binary.vec.ls.helper, r.range$experiment.value,
+    ~list(
+      u.mle.opt.fr >= 0, # u to be non-negative
+      # u.mle.opt <= 500, # u to be not greater than 500
+      sum(u.mle.opt.fr) == sum.c.vec, # sum of u being equal to the sum of the c.vector
+      t(.x) %*% u.mle.opt.fr == .y # focus region r*
+    ))
+                                   
+# Problem solution
+mle.opt.prob.fr <- map(constraints.mle.opt.fr.list, 
+                       ~Problem(objective.mle.opt.fr, .x))
+
+# parallelized solving
+# library(furrr)
+# no_cores <- availableCores() - 1
+# plan(multicore, workers = no_cores)
+
+# mle.opt.solution.fr <- future_map(mle.opt.prob.fr, ~solve(.x, solver = "MOSEK"), .progress = T)
+# mle.opt.solution.fr <- map(mle.opt.prob.fr, ~solve(.x, solver = "MOSEK"))
+
+# likelihood distribution table
+# l.range <- r.range %>%
+#   mutate(l.value = map(mle.opt.solution.fr, ~.x[["value"]])) %>%
+#   mutate(l.value = as.numeric(as.character(l.value))) %>%
+#   mutate(l.value.log = -log10(abs(l.value))) %>% 
+#   mutate(solver.status = map_chr(mle.opt.solution.fr, ~.x[["status"]])) %>%
+#   mutate(time = map_dbl(mle.opt.solution.fr, ~.x[["solve_time"]])) %>%
+#   left_join(focus.region.helper, by = "focus.region.key")
+
+# saveRDS(l.range, "CVXR/l.range.standardized.w.out.uppper.bound.rds")
+l.range <- readRDS("CVXR/l.range.standardized.w.out.uppper.bound.rds")
+
+
+ci.helper <- l.range %>% 
+  distinct(focus.region.key, .keep_all = T) 
+
+(ci.plot <- l.range %>% 
+    ggplot() +
+    geom_point(aes(x = experiment.value,
+                   y = l.value.log,
+                   color = solver.status)) +
+    facet_wrap(vars(focus.region.key), scales = "free") +
+    geom_vline(data = ci.helper, aes(xintercept = focuis.region.pop), linetype = "dashed") +
+    geom_vline(data = ci.helper, aes(xintercept = r.estimated), linetype = "dashed", color = "red") +
+    geom_text(aes(x = focus.region.pop), y = -log10(5470000)*(-1) + 2.2, label = "r_true") +
+    geom_text(aes(x = r.estimated), y = -log10(5450000) *(-1) + 2, label = "r_MLE", color = "red") +
+    # geom_hline(yintercept = l.max -  (l.max / 100), color = "grey") +
+    labs(x = "Total count of r in Focus Region",
+         y = "-log10(abs(Likelihood))",
+         title = "Confidence interval for focus region estimate, standardized ML = -1.543375e-06",
+         subtitle = "Mind the differing scales between focus regions"))
+
+
+# minimize the minus of the standardized obje --> it goes towards 0
+# log of the maximum 
+
+# ggsave("CVXR/CI.plot.png", ci.plot, device = "png")
+
+# 2 matrjoschka with 3 focus region each and one in dense and one in rural area
+```
+
+```{r}
+(ci.plot <- l.range %>% 
+    filter(focus.region.key == "focus.region.2") %>% 
+    ggplot() +
+    geom_point(aes(x = experiment.value,
+                   y = l.value.log,
+                   color = solver.status)) +
+    xlim(3000, 7200) +
+    facet_wrap(vars(focus.region.key), scales = "free") +
+    geom_vline(data = ci.helper, aes(xintercept = focus.region.pop), linetype = "dashed") +
+    geom_vline(data = ci.helper, aes(xintercept = r.estimated), linetype = "dashed", color = "red") +
+    geom_text(aes(x = focus.region.pop), y = -log10(5470000)*(-1) + 2.2, label = "r_true") +
+    geom_text(aes(x = r.estimated), y = -log10(5450000) *(-1) + 2, label = "r_MLE", color = "red") +
+    # geom_hline(yintercept = l.max -  (l.max / 100), color = "grey") +
+    labs(x = "Total count of r in Focus Region",
+         y = "-log10(abs(Likelihood))",
+         title = "Confidence interval for focus region estimate, standardized ML = -1.543375e-06",
+         subtitle = "Mind the differing scales between focus regions"))
+```
+
+
+
+```{r comp-upper-bound}
+l.range.w.upper <- readRDS("CVXR/l.range.standardized.w.uppper.bound.rds") %>% 
+  mutate(kind = "with upper bound")
+
+complete.range <- l.range %>% 
+  mutate(kind = "without upper bound") %>% 
+  bind_rows(l.range.w.upper)
+
+ci.helper <- complete.range %>% 
+  distinct(focus.region.key, .keep_all = T) %>% 
+    filter(focus.region.key == "focus.region.2") 
+
+(ci.plot <- complete.range %>% 
+    filter(focus.region.key == "focus.region.2") %>% 
+    ggplot() +
+    geom_point(aes(x = experiment.value,
+                   y = l.value.log,
+                   color = solver.status)) +
+    xlim(3000, 7200) +
+    facet_wrap(vars(kind), scales = "free") +
+    geom_vline(data = ci.helper, aes(xintercept = focus.region.pop), linetype = "dashed") +
+    geom_vline(data = ci.helper, aes(xintercept = r.estimated), linetype = "dashed", color = "red") +
+    geom_text(aes(x = focus.region.pop), y = -log10(5470000)*(-1) + 2.2, label = "r_true") +
+    geom_text(aes(x = r.estimated), y = -log10(5450000) *(-1) + 2, label = "r_MLE", color = "red") +
+    # geom_hline(yintercept = l.max -  (l.max / 100), color = "grey") +
+    labs(x = "Total count of r in Focus Region",
+         y = "-log10(abs(Likelihood))",
+         title = "Confidence interval for focus region estimate, ML = 5477728",
+         subtitle = "Mind the differing scales between focus regions"))
+```
+
+
+
+## MAP
+
+Either directly or via a two step approach
+
+```{r}
+# to be finished...
+
+# a.vec <- t(matrix(c(a.vec.raw), nrow = 1))
+# A.mat.inv <- .sparseDiagonal(n = length(a.vec.raw), x = (1 / a.vec.raw))
+
+
+# # Problem definition
+# objective.map <- Minimize( sum( (u - a.vec)^2))
+# objective.map <- Minimize( cvxr_norm(u - a.vec)^2)
+# 
+# constraints.map <- list(
+#   u >= 0,
+#   sum(u) == sum.c.vec,
+#   c.vec %*% P.mat %*% u >= solution[["value"]] - (solution[["value"]] * 0.1)
+#   # c.vec %*% log(P.mat %*% u) <= 5478000
+# )
+# prob.map <- Problem(objective.map, constraints.map)
+# # Problem solution
+# solution.map <- solve(prob.map, solver = "GUROBI")
+# solution$status
+
+# non weighted least squares --> non weighted L2 norm should be minimized
+# possibly two step approach as a solution if both terms together are not convex  
+# c*logPu = within a certain range of the optimal result of the first term (LB and UP with five to 10 per cent difference range)
+```
+
+# Evaluation
+
+```{r evaluation-setup}
+# putting everything into an sf-dataframe together
+final.estimates.sf <- area$area.sf %>% 
+  left_join(MLE.est, by = "tile.id") %>% 
+  left_join(CVXR.est, by = "tile.id")
+
+# non-sf version
+final.estimates.df <- final.estimates.sf %>% 
+  st_drop_geometry()
+
+# vector with names of the relevant estimates
+names.estimates <- final.estimates.sf %>% 
+  # dplyr::select(pop, starts_with("u.")) %>% # all estimates
+  dplyr::select(pop, matches("CVXR_1$|200")) %>% # only "final" ones for mapping
+  st_drop_geometry() %>% 
+  names() 
+```
+
+## Evaluation: 1d Density
+
+```{r 1d-density, warning=FALSE, fig.cap="Comparing ECCDF of estimates to the GTP's"}
+# calculate density dataset for all estimates and GTP 
+cdf.compare <- final.estimates.df %>% 
+  dplyr::select(tile.id, all_of(names.estimates)) %>% 
+  pivot_longer(cols = -tile.id, names_to = "estimates", values_to = "values") %>% 
+  split(.$estimates) %>% 
+  map(~custom_ecdf_prep(.)) %>% 
+  map(~dplyr::select(., cum.prob.comp, pop.plot)) %>%
+  map(~mutate(., cum.prob.comp = round(cum.prob.comp, 3))) %>% # effective plot sample --> faster plotting excluding overplot
+  map_dfr(~distinct(.), .id = "type")
+## Warning in mask$eval_all_mutate(quo): NANs can be present
+
+minor.breaks <- rep(1:9, 21) * (10^rep(-10:10, each = 9))
+
+# ECCDF plot
+(ECCDF.pop.plot <- cdf.compare %>% 
+    ggplot() + 
+    geom_line(aes(x = pop.plot, y = cum.prob.comp,
+                  color = type), size = 1) + 
+    scale_color_ptol() +
+    scale_y_log10(labels = scales::trans_format("log10", 
+                                                scales::math_format(10^.x)),
+                  minor_breaks = minor.breaks) +
+    scale_x_log10(labels = scales::trans_format("log10", 
+                                                scales::math_format(10^.x)),
+                  minor_breaks = minor.breaks) +
+    annotation_logticks(sides = "lb") +
+    labs(y = "log10(ECCDF)", x = "log10(Mobile phones)",  
+         colour = "", caption = "The green line is very much hidden by the yellow line") +
+    theme(legend.position = "bottom",
+          text = element_text(size = 13)))
+
+# ggsave("Plots/eccdf.estimates.png", ECCDF.pop.plot, device = "png")
+```
+
+## Evaluation: 2d Density plots
+
+These will be included in the follow up version.
+
+<!-- ## Evaluation: 2d Density -->
+
+<!-- ```{r 2d-density, warning=FALSE, message=FALSE} -->
+<!-- # names of specified estimators for order control -->
+<!-- names.order.estimator <- c("u.flat",  -->
+<!--                            "u.VOR.tower", "u.VOR.offset", "u.VOR.barycenter", -->
+<!--                            "u.SB", -->
+<!--                            "u.MLE",  -->
+<!--                            "u.DF") -->
+
+<!-- # define additional necessary rescalings of the area (next to 1x1) -->
+<!-- rescale.factor.list <- list(area.1x1 = 1, -->
+<!--                             area.2x2 = 2,  -->
+<!--                             area.4x4 = 4,  -->
+<!--                             area.8x8 = 8) -->
+
+<!-- # aggregate estimate values based on rescaling level -->
+<!-- area.rescaled.grid <- map(rescale.factor.list,  -->
+<!--                           ~st_make_grid(area$area.sf, cellsize = area$area.params[["base.tile.size"]] * .x)) -->
+
+<!-- # define relevant estimates -->
+<!-- mse.relevant.estimators <- final.estimates.sf %>%  -->
+<!--   dplyr::select(tile.id, pop, matches("VOR|SB|flat|1|10|100|200")) %>%  -->
+<!--   dplyr::select(-matches("prior")) -->
+
+<!-- # develop a list element with grid aggregated values -->
+<!-- mse.est <- map(area.rescaled.grid, ~aggregate(mse.relevant.estimators, by = .x, FUN = mean, join = st_contains)) %>%  -->
+<!--   map(~st_drop_geometry(.)) -->
+
+<!-- # define data frame with the necessary variables for visualization of estimate vs. GTP -->
+<!-- point <- mse.est %>%  -->
+<!--   map(~mutate(., tile.id.rescaled = row_number())) %>%  -->
+<!--   map(~dplyr::select(., tile.id.rescaled, pop, starts_with("u."))) %>%  -->
+<!--   map_dfr(~pivot_longer(., cols = -c(tile.id.rescaled, pop),  -->
+<!--                         names_to = "estimator", values_to = "estimate"), .id = "scale") %>%  -->
+<!--   mutate(rescale.factor = as.numeric(str_extract(scale, "[[:digit:]]")), -->
+<!--          iteration = str_extract(estimator, "[[:digit:]]+"), -->
+<!--          kind = str_extract(estimator, "[[:alpha:][:punct:]]+")) %>%  -->
+<!--   mutate(iteration = case_when(is.na(iteration) ~ 0, -->
+<!--                                TRUE ~ as.numeric(iteration))) %>%  -->
+<!--   mutate(estimator.ordered = factor(kind, levels = names.order.estimator)) -->
+
+
+<!-- # selected estimators (iterations) for 2d density plots -->
+<!-- scatter.names <- c("u.MLE1", "u.MLE10", "u.MLE100", "u.MLE200", -->
+<!--                    "u.VOR.barycenter", "u.VOR.tower") -->
+
+<!-- # custom 2d density plots -->
+<!-- scatter.density.plots <- scatter.names %>%  -->
+<!--   map(~scatter_density(point, estimator.name = .x)) %>% -->
+<!--   set_names(scatter.names) -->
+<!-- ``` -->
+
+<!-- ```{r scatter-density-MLE1, fig.cap="Joint Density MLE 1"} -->
+<!-- ggpubr::as_ggplot(scatter.density.plots$u.MLE1) -->
+<!-- ggsave("Plots/u.MLE1.2d.density.png", scatter.density.plots$u.MLE1, device = "png") -->
+<!-- ``` -->
+
+<!-- ```{r scatter-density-MLE10, fig.cap="Joint Density MLE 10"} -->
+<!-- ggpubr::as_ggplot(scatter.density.plots$u.MLE10) -->
+<!-- ggsave("Plots/u.MLE10.2d.density.png", scatter.density.plots$u.MLE10, device = "png") -->
+<!-- ``` -->
+
+<!-- ```{r scatter-density-MLE100, fig.cap="Joint Density MLE 100"} -->
+<!-- ggpubr::as_ggplot(scatter.density.plots$u.MLE100) -->
+<!-- ggsave("Plots/u.MLE100.2d.density.png", scatter.density.plots$u.MLE100, device = "png") -->
+<!-- ``` -->
+
+<!-- ```{r scatter-density-MLE200, fig.cap="Joint Density MLE 200"} -->
+<!-- ggpubr::as_ggplot(scatter.density.plots$u.MLE200) -->
+<!-- ggsave("Plots/u.MLE200.2d.density.png", scatter.density.plots$u.MLE200, device = "png") -->
+<!-- ``` -->
+
+<!-- ```{r scatter-density-VOR-t, fig.cap="Joint Density Voronoi Tower"} -->
+<!-- ggpubr::as_ggplot(scatter.density.plots$u.VOR.tower) -->
+<!-- ggsave("Plots/u.VOR.tower.2d.density.png", scatter.density.plots$u.VOR.tower, device = "png") -->
+<!-- ``` -->
+
+
+## Evaluation: Spatial Density
+
+```{r spatial-estimates-maps, message=FALSE}
+# define legend labels for maps
+maps.labels <- list("GTP  ", 
+                    "MLE_EM.200", 
+                    "MLE_OPT.1", "MLE_OPT.200")
+
+# check if there is divergence, what are the maximum estimates per tile for each estimator
+max.maps <- final.estimates.sf %>% 
+  st_drop_geometry() %>% 
+  dplyr::select(tile.id, pop, starts_with("u.")) %>% # only specific ones for mapping
+  summarise_all(max) %>% 
+  pivot_longer(cols = -tile.id, names_to = "estimator", values_to = "estimate")
+
+
+# Define break points for discretized spatial density plots
+breaks <- c(0, 2, 5, 10, 20, 50, 100, 200, 350, Inf)
+maps.input <- final.estimates.sf %>% 
+  dplyr::select(tile.id, pop, X.centroid, Y.centroid, all_of(names.estimates)) %>% 
+  mutate(across(c(pop, starts_with("u.")), ~cut(., breaks = breaks, dig.lab = 7, right = F)))
+
+# Build maps 
+maps.estimation.density <- names.estimates %>%
+    map2(., maps.labels, ~map_density(data = maps.input, var = .x, label = .y)) %>%
+    set_names(names.estimates)
+
+```
+
+```{r spatial-density-gtp, fig.cap="Spatial Density GTP"}
+maps.estimation.density$pop
+# ggsave("Plots/pop.map.png", maps.estimation.density$pop, device = "png")
+```
+
+```{r spatial-density-MLE-EM-200, fig.cap="Spatial Density MLE-EM-200"}
+maps.estimation.density$u.MLE_200
+# ggsave("Plots/u.VOR.tower.map.png", maps.estimation.density$u.VOR.tower, device = "png")
+```
+
+```{r spatial-density-MLE-OPT-1, fig.cap="Spatial Density MLE-OPT-1"}
+maps.estimation.density$u.CVXR_1
+# ggsave("Plots/u.VOR.offset.map.png", maps.estimation.density$u.VOR.offset, device = "png")
+```
+
+```{r spatial-density-MLE-OPT-200, fig.cap="Spatial Density MLE-OPT-200"}
+maps.estimation.density$u.CVXR_200
+# ggsave("Plots/u.VOR.barycenter.map.png", maps.estimation.density$u.VOR.barycenter, device = "png")
+```
+
+
+
+## Evaluation: KWD
+
+Here we present the KWD results of the different estimates.
+
+```{r kwd-setup}
+# develop dataframe with GTP, all estimates and tile centroids
+kwd.helper.est <- final.estimates.sf %>% 
+  dplyr::select(-c(elevation, type)) %>%
+  st_centroid() %>% 
+  mutate(lon = unlist(map(.$geometry, 1)),
+         lat = unlist(map(.$geometry, 2))) %>% 
+  st_drop_geometry()
+
+# Coordinates object
+coordinates <- kwd.helper.est %>% 
+  dplyr::select(lon, lat) %>% 
+  as.matrix()
+
+# Weights object
+weights <- kwd.helper.est %>% 
+  dplyr::select(pop, matches("u.")) %>% 
+  as.matrix()
+
+# Approximation parameter (the higher the more accurate)
+L = 3
+
+# Run KWD
+kwd.final <- compareOneToMany(coordinates, weights, L = L, recode = TRUE)
+paste("KWD runtime ( L =", L, "):", round(kwd.final$runtime / 60, 0), "min for", 
+      ncol(weights) - 1, "estimates and", 
+      length(final.estimates.df$tile.id), "tiles")
+
+# Define names for estimators
+names.weights <- colnames(weights)[-1]
+
+# Develop data frame on the estimtor level with respective KWD values
+kwd.eval <- tibble(estimator = names.weights,
+                   kwd = kwd.final$distance * 1) %>%  # rescaling according to scale
+  mutate(kwd.lower.bound = kwd - ((kwd / 100) * 1.29)) %>%  # for L=3 within 1 percent 
+  mutate(iteration = str_extract(estimator, "[[:digit:]]+"),
+         kind = str_extract(estimator, "[[:alpha:][:punct:]]+")) %>%
+  mutate(iteration = case_when(is.na(iteration) ~ 0,
+                               TRUE ~ as.numeric(iteration))) %>% 
+  group_by(kind) %>% 
+  mutate(min.kwd.kind = min(kwd),
+         kind.group = row_number() / max(row_number())) %>% # find minimum per estimator (for ordering help)
+  ungroup() %>% 
+  arrange(desc(min.kwd.kind), iteration) %>% 
+  mutate(final.order = row_number()) %>% 
+  mutate(estimator.new = factor(final.order, labels = estimator))
+```
+
+```{r kwd-final-estimates-plot, fig.cap="KWD (L=3) values of the final estimates"}
+# define the flat estimator KWD value for reference purposes
+# this is only implemented as a caption in the following plot to prevent scale distortiton
+flat.ref <- round(as.numeric(kwd.eval[kwd.eval$estimator == "u.flat", "kwd"]), 2)
+
+# develop KWD bar plot for selected estimators
+(kwd.final.estimates.plot <- kwd.eval %>% 
+    filter(!str_detect(estimator, "flat|prior")) %>% 
+    ggplot(aes(x = estimator.new, y = kwd, fill = kind, alpha = kind.group)) + 
+    geom_bar(stat = "identity", position = position_dodge(width = 0.9)) + 
+    geom_errorbar(aes(ymin = kwd.lower.bound, ymax = kwd), position = position_dodge(width = 0.9), width = 0.25) +
+    geom_text(aes(x = estimator.new, y = kwd, label = round(kwd, 2)), 
+              position = position_dodge(0.1), hjust = -0.1, color = "Black", size = 3) +
+    scale_alpha(range = c(0.5, 1), 
+                guide = F
+                # labels = unique(kwd.eval$iteration)
+    ) + 
+    scale_fill_ptol(guide = FALSE) +
+    coord_flip() +
+    labs(x = "", y = "KWD", 
+         alpha = "Iteration", 
+         subtitle = paste0("(Reference: Flat = ", flat.ref, ")")) + 
+    theme(legend.position = "bottom",
+          text = element_text(size = 13)))
+```
