@@ -142,22 +142,27 @@ sum.c.vec <- sum(c.vec)
 # number of supertiles (--> number of decision variables)
 n.j <- length(a.vec)
 
+stand.c.vec <- t(c.vec[c.vec > 0]) %*% log10(c.vec[c.vec > 0])
+
+B.mat <- P.mat
+B.mat[B.mat > 0] <- 1
+
 
 ## CVXR routine
 # Specifying the decision variables
 u.mle.opt <- Variable(n.j)
 
-stand.c.vec <- t(c.vec[c.vec > 0]) %*% log(c.vec[c.vec > 0])
-
 # Objective function specification
 # objective.mle.opt <- Maximize(c.vec %*% log(P.mat %*% u.mle.opt))
-objective.mle.opt <- Maximize( (c.vec %*% log(P.mat %*% u.mle.opt) - stand.c.vec) / stand.c.vec ) # standardized
+objective.mle.opt <- Maximize( (c.vec %*% log10(P.mat %*% u.mle.opt) - stand.c.vec) / stand.c.vec ) # standardized
 
 # Constrains specification
 constraints.mle.opt <- list(
   u.mle.opt >= 0, # u to be non-negative
   # u.mle.opt <= 500, # u to be not greater than 500
-  sum(u.mle.opt) == sum.c.vec # the sum of u being equal to the sum of the c.vector
+  sum(u.mle.opt) == sum.c.vec, # the sum of u being equal to the sum of the c.vector
+  t(B.mat) %*% t(c.vec) >= u.mle.opt,
+  B.mat %*% u.mle.opt >= t(c.vec)
 )
 
 
@@ -222,24 +227,29 @@ A focus region is defined through a binary variable on the tile level that indic
 
 ```{r focus-region}
 
-set.seed(2139)
-
 # confidence interval
-size <- c("focus.region.1" = 2000, 
-          "focus.region.2" = 4000, 
-          "focus.region.3" = 7000, 
-          "focus.region.4" = 10000)
+focus.region.points <- list("focus.region.1" = st_point(x = c(4440000, 2780000), dim = "XY"),
+                            "focus.region.2" = st_point(x = c(4450000, 2777000), dim = "XY"))
+  
+size <- c(2000, 4000, 7000, 9000)
+comb.focus.region <- crossing(focus.region.n = names(focus.region.points), size) %>%
+  arrange(size)
+comb.focus.region.ls <- comb.focus.region %>%
+  purrr::transpose() %>%
+  set_names(paste(comb.focus.region$focus.region.n, comb.focus.region$size, sep = "_"))
 
 
-focus.region.list <- st_sample(area$area.sf.complete, size = length(size)) %>%
-  map2(., size, ~st_buffer(.x, dist = .y, endCapStyle = "SQUARE")) 
+focus.region.list <- focus.region.points %>% 
+  rep(., 4) %>%
+  set_names(names(comb.focus.region.ls)) %>%
+  map2(., comb.focus.region$size, ~st_buffer(.x, dist = .y, endCapStyle = "SQUARE"))
 
 
 
 # Marking the tiles that belong to the focus region
-focus.region.sf.list <- rep(list(area$area.sf.complete), length(size)) %>% 
-  map2(focus.region.list, ~mutate(.x, focus.region = lengths(st_within(area$area.sf.complete, .y)))) %>% 
-  set_names(names(size)) 
+focus.region.sf.list <- rep(list(area$area.sf.complete), length(comb.focus.region.ls)) %>%
+  map2(focus.region.list, ~mutate(.x, focus.region = lengths(st_within(area$area.sf.complete, .y)))) %>%
+  set_names(names(focus.region.list)) 
 
 # Generate focus region vector
 focus.region.vec.ls <- focus.region.sf.list %>% 
@@ -264,22 +274,30 @@ focus.region.plot.data <- focus.region.sf.list %>%
   map(~mutate(., focus.region.size = sum(focus.region))) %>%
   map(~mutate(., focus.region.pop = case_when(focus.region == 1 ~ sum(pop),
                                               TRUE ~ NA_real_))) %>% 
+  map(ungroup) %>% 
   map_dfr(st_drop_geometry, .id = "focus.region.key")
 
-focus.region.helper <- focus.region.plot.data %>% 
-  filter(focus.region == 1) %>% 
+focus.region.plot.geo.data <- focus.region.sf.list %>% 
+  map(~group_by(., focus.region)) %>% 
+  map(summarise) %>% 
+  map(st_convex_hull) %>% 
+  rbindlist(idcol = "focus.region.key") %>% 
+  st_as_sf()
+
+focus.region.helper <- focus.region.plot.data %>%
+  arrange(focus.region.pop) %>% 
   distinct(focus.region.key, .keep_all = T) %>% 
   mutate(label = paste(focus.region.size, "regular tiles\nwith", focus.region.pop, "phones"))
 
-(focus.region.plot <- focus.region.plot.data %>% 
-  ggplot(aes(x = X.centroid, y = Y.centroid)) +
-  geom_scattermore(aes(color = factor(focus.region)), pointsize = 1.9, pixels = c(900, 900)) +
-  coord_sf() +
-  geom_text(data = focus.region.helper, aes(label = label), 
-            x = 4440000, y = 2780000) +
+(focus.region.plot <- focus.region.plot.geo.data %>% 
+    separate(focus.region.key, into = c("focus.region.key.2", "size"), sep = "_") %>% 
+    ggplot() +
+    geom_sf(aes(color = size), fill = "transparent") +
+    # geom_text(data = focus.region.helper, aes(label = label), 
+    #         x = 4440000, y = 2780000) +
   labs(x = "", y = "", color = "Focus region") +
   # geom_sf(aes(fill = factor(focus.region)), color = "transparent") +
-  facet_wrap(vars(focus.region.key)) +
+  facet_wrap(vars(focus.region.key.2)) +
   theme(axis.title.x = element_blank(),
         axis.text.x = element_blank(),
         axis.ticks.x = element_blank(),
@@ -294,13 +312,13 @@ focus.region.helper <- focus.region.plot.data %>%
 ```{r ci}
 
 # specifying the focus region mass based on the mle.opt
-r.mle.opt <- rep(list(mle.opt.raw.estimate), length(size)) %>% 
+r.mle.opt <- rep(list(mle.opt.raw.estimate), length(focus.region.sf.list)) %>% 
   map2(., focus.region.vec.ls, ~filter(., j %in% .y)) %>% 
   map(~summarise(., sum(u))) %>% 
   map(deframe)
 
 # specifying the focus region mass based on the ground truth
-r.true <- rep(list(area$area.df.complete), length(size)) %>% 
+r.true <- rep(list(area$area.df.complete), length(focus.region.sf.list)) %>% 
   map2(., focus.region.vec.ls, ~filter(., supertile.id.num %in% .y)) %>% 
   map(~summarise(., sum(pop))) %>% 
   map(deframe)
@@ -310,26 +328,26 @@ r.true <- rep(list(area$area.df.complete), length(size)) %>%
 
 
 # neighboring r* values
-r.range <- rep(list(tibble(experiment.key = seq(-10, 25, 0.2))), length(size)) %>%
+r.range <- rep(list(tibble(experiment.key = seq(-10, 25, 2))), length(focus.region.sf.list)) %>%
   map2(., r.mle.opt, ~mutate(.x, r.estimated = .y)) %>% 
   map(~mutate(., experiment.value = r.estimated + (experiment.key * (r.estimated / 10)))) %>% 
-  set_names(names(size)) %>% 
-  map_dfr(~filter(., !experiment.value < 0), .id = "focus.region.key") %>% 
+  set_names(names(focus.region.sf.list)) %>% 
+  map_dfr(~filter(., !experiment.value < 0), .id = "focus.region.key") %>%# hier nochmal checken
   arrange(experiment.key)
 
 focus.region.binary.vec.ls.helper <- focus.region.binary.vec.ls %>% 
-  set_names(names(size)) %>% 
+  set_names(names(focus.region.sf.list)) %>% 
   rep(., length(unique(r.range$experiment.key)))
 
 ## CVXR routine
 # Specifying the decision variables
 u.mle.opt.fr <- Variable(n.j)
 
-stand.c.vec <- t(c.vec[c.vec > 0]) %*% log(c.vec[c.vec > 0])
+stand.c.vec <- t(c.vec[c.vec > 0]) %*% log10(c.vec[c.vec > 0])
 
 # Objective function specification
 # objective.mle.opt.fr <- Maximize(c.vec %*% log(P.mat %*% u.mle.opt.fr)) # original
-objective.mle.opt.fr <- Maximize( (c.vec %*% log(P.mat %*% u.mle.opt.fr) - stand.c.vec) / stand.c.vec ) # standardized
+objective.mle.opt.fr <- Maximize( (c.vec %*% log10(P.mat %*% u.mle.opt.fr) - stand.c.vec) / stand.c.vec ) # standardized
 
 # Constrains specification
 constraints.mle.opt.fr.list <- map2(focus.region.binary.vec.ls.helper, r.range$experiment.value,
@@ -337,6 +355,8 @@ constraints.mle.opt.fr.list <- map2(focus.region.binary.vec.ls.helper, r.range$e
       u.mle.opt.fr >= 0, # u to be non-negative
       # u.mle.opt <= 500, # u to be not greater than 500
       sum(u.mle.opt.fr) == sum.c.vec, # sum of u being equal to the sum of the c.vector
+      t(B.mat) %*% t(c.vec) >= u.mle.opt.fr,
+      B.mat %*% u.mle.opt.fr >= t(c.vec),
       t(.x) %*% u.mle.opt.fr == .y # focus region r*
     ))
                                    
@@ -344,45 +364,53 @@ constraints.mle.opt.fr.list <- map2(focus.region.binary.vec.ls.helper, r.range$e
 mle.opt.prob.fr <- map(constraints.mle.opt.fr.list, 
                        ~Problem(objective.mle.opt.fr, .x))
 
-# parallelized solving
-# library(furrr)
-# no_cores <- availableCores() - 1
-# plan(multicore, workers = no_cores)
-
-# mle.opt.solution.fr <- future_map(mle.opt.prob.fr, ~solve(.x, solver = "MOSEK"), .progress = T)
-# mle.opt.solution.fr <- map(mle.opt.prob.fr, ~solve(.x, solver = "MOSEK"))
+mle.opt.solution.fr <- map(mle.opt.prob.fr, ~solve(.x, solver = "MOSEK"))
 
 # likelihood distribution table
-# l.range <- r.range %>%
-#   mutate(l.value = map(mle.opt.solution.fr, ~.x[["value"]])) %>%
-#   mutate(l.value = as.numeric(as.character(l.value))) %>%
-#   mutate(l.value.log = -log10(abs(l.value))) %>% 
-#   mutate(solver.status = map_chr(mle.opt.solution.fr, ~.x[["status"]])) %>%
-#   mutate(time = map_dbl(mle.opt.solution.fr, ~.x[["solve_time"]])) %>%
-#   left_join(focus.region.helper, by = "focus.region.key")
+l.range <- r.range %>%
+  mutate(l.value = map(mle.opt.solution.fr, ~.x[["value"]])) %>%
+  mutate(l.value = as.numeric(as.character(l.value))) %>%
+  mutate(l.value.log = -log10(abs(l.value))) %>%
+  mutate(solver.status = map_chr(mle.opt.solution.fr, ~.x[["status"]])) %>%
+  mutate(time = map_dbl(mle.opt.solution.fr, ~.x[["solve_time"]])) %>%
+  left_join(focus.region.helper, by = "focus.region.key")
 
-# saveRDS(l.range, "CVXR/l.range.standardized.w.out.uppper.bound.rds")
-l.range <- readRDS("CVXR/l.range.standardized.w.out.uppper.bound.rds")
+saveRDS(l.range, "CVXR/l.range.standardized.new.constraints.w.out.uppper.bound.rds")
+# l.range <- readRDS("CVXR/l.range.standardized.new.constraints.w.out.uppper.bound.rds")
 
 
 ci.helper <- l.range %>% 
+  arrange(r.estimated) %>% 
   distinct(focus.region.key, .keep_all = T) 
 
 (ci.plot <- l.range %>% 
     ggplot() +
     geom_point(aes(x = experiment.value,
-                   y = l.value.log,
+                   y = l.value,
                    color = solver.status)) +
-    facet_wrap(vars(focus.region.key), scales = "free") +
-    geom_vline(data = ci.helper, aes(xintercept = focuis.region.pop), linetype = "dashed") +
+    # scale_x_log10() +
+    facet_wrap(vars(focus.region.key), nrow = 4) +
+    geom_vline(data = ci.helper, aes(xintercept = focus.region.pop), linetype = "dashed") +
     geom_vline(data = ci.helper, aes(xintercept = r.estimated), linetype = "dashed", color = "red") +
-    geom_text(aes(x = focus.region.pop), y = -log10(5470000)*(-1) + 2.2, label = "r_true") +
-    geom_text(aes(x = r.estimated), y = -log10(5450000) *(-1) + 2, label = "r_MLE", color = "red") +
+    # geom_text(aes(x = focus.region.pop), y = -log10(5470000)*(-1) + 2.2, label = "r_true") +
+    # geom_text(aes(x = r.estimated), y = -log10(5450000) *(-1) + 2, label = "r_MLE", color = "red") +
     # geom_hline(yintercept = l.max -  (l.max / 100), color = "grey") +
     labs(x = "Total count of r in Focus Region",
          y = "-log10(abs(Likelihood))",
          title = "Confidence interval for focus region estimate, standardized ML = -1.543375e-06",
          subtitle = "Mind the differing scales between focus regions"))
+
+# find infeasible and then stop
+
+# columns for plots
+
+# resolution times
+
+# log and linear scale for y
+
+# log for x 
+
+# run old notebook with extra 2 constraints --> does mode change and the range as well
 
 
 # minimize the minus of the standardized obje --> it goes towards 0
